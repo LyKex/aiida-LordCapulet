@@ -75,33 +75,17 @@ The flagship workflow that orchestrates an automated search process:
 - **ConstrainedScanWorkChain**: Batch execution of constrained DFT calculations with OSCDFT
 - **ConstrainedPWCalculation**: Custom PW calculation plugin with OSCDFT constraint handling
 
-### Analysis & Visualization Tools
-
-#### Data Extraction
-- **Intelligent Workchain Analysis**: Automatic detection and classification of workchain types
-- **Source Tagging**: Distinguishes between AFM-derived and constrained scan calculations
-- **Comprehensive Data Mining**: Extracts energies, magnetic moments, and occupation matrices
-
-#### Visualization
-- **Publication-Ready Plots**: Energy vs magnetic moment scatter plots with source differentiation
-- **Enhanced AFM Visualization**: Larger, more prominent markers for AFM-derived points
-- **Notebook-Style Scripts**: Modular analysis with `#%%` cell structure for easy exploration
-
-### Production Features
-- **SLURM Integration**: Full walltime control with sensible defaults (1 hour, configurable)
-- **Resource Management**: Flexible specification of computational resources per workchain type
-- **Robust Error Handling**: Graceful handling of calculation failures with detailed reporting
-- **Scalable Architecture**: Designed for high-throughput exploration of complex materials
 
 ## Installation
-
 ```bash
+git clone `git@github.com:alberto-carta/aiida-LordCapulet.git`
+cd aiida-LordCapulet
 pip install -e .
 ```
 
 ## Usage
 
-### Direct Import
+### Import
 ```python
 from lordcapulet import ConstrainedPWCalculation, AFMScanWorkChain, ConstrainedScanWorkChain, GlobalConstrainedSearchWorkChain
 ```
@@ -155,9 +139,6 @@ workchain = submit(GlobalConstrainedSearchWorkChain, **inputs)
 # Extract workchain data with source tagging
 from examples.gather_workchain_data import gather_workchain_data
 data = gather_workchain_data(workchain_pk=your_workchain_pk)
-
-# Create publication-ready plots
-exec(open('examples/plot_workchain_data.py').read())
 ```
 
 See `examples/` directory for complete working examples including UO2, NiO, and FeO systems.
@@ -237,9 +218,3 @@ tests/                               # Test suite
 └── test_*.py                       # Unit tests for all components
 ```
 
-## Recent Updates
-
-- **Walltime Control**: Flexible SLURM walltime configuration with per-workchain and global override options
-- **Enhanced Analysis**: Intelligent workchain type detection and source tagging for comprehensive data mining
-- **Visualization Tools**: Publication-ready plotting with enhanced AFM point visibility
-- **Production Ready**: Robust error handling, resource management, and scalable architecture for HPC environments
