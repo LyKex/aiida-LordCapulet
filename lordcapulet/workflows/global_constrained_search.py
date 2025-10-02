@@ -50,6 +50,12 @@ class GlobalConstrainedSearchWorkChain(WorkChain):
         spec.input('proposal_kwargs', valid_type=Dict, required=False,
                   help='Additional keyword arguments for proposal function')
         
+        # Walltime control parameters (optional - will override sub-workchain defaults)
+        spec.input('afm_walltime_hours', valid_type=Float, required=False,
+                  help='Walltime in hours for AFM calculations (overrides afm.walltime_hours if provided)')
+        spec.input('constrained_walltime_hours', valid_type=Float, required=False,
+                  help='Walltime in hours for constrained calculations (overrides constrained.walltime_hours if provided)')
+        
         spec.outline(
             cls.run_initial_afm_search,
             cls.process_afm_results,
@@ -88,6 +94,11 @@ class GlobalConstrainedSearchWorkChain(WorkChain):
         # Submit AFM scan with exposed inputs
         afm_builder = AFMScanWorkChain.get_builder()
         afm_builder.update(self.inputs.afm)
+        
+        # Override walltime if provided at global level
+        if 'afm_walltime_hours' in self.inputs:
+            afm_builder.walltime_hours = self.inputs.afm_walltime_hours
+            self.report(f"Using global AFM walltime: {self.inputs.afm_walltime_hours.value} hours")
         
         future = self.submit(afm_builder)
         return ToContext(afm_wc=future)
@@ -177,6 +188,11 @@ class GlobalConstrainedSearchWorkChain(WorkChain):
         constrained_builder = ConstrainedScanWorkChain.get_builder()
         constrained_builder.update(self.inputs.constrained)
         constrained_builder.occupation_matrices_list = List(list=current_proposals)
+        
+        # Override walltime if provided at global level
+        if 'constrained_walltime_hours' in self.inputs:
+            constrained_builder.walltime_hours = self.inputs.constrained_walltime_hours
+            self.report(f"Using global constrained walltime: {self.inputs.constrained_walltime_hours.value} hours")
         
         future = self.submit(constrained_builder)
         return ToContext(constrained_wc=future)

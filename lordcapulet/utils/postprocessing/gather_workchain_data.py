@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """
-Script to recursively traverse a workchain and extract data from converged PW and ConstrainedPW calculations.
+Extract calculations from GlobalConstrainedSearchWorkChain with source tagging.
 
-This module provides functionality to:
-1. Recursively traverse a workchain's called links
-2. Identify PW and ConstrainedPW calculations
-3. Extract output_atomic_occupations, output_parameters, and inputs for converged calculations
-4. Store the data in a structured dictionary and save as JSON
+Identifies and tags calculations by their source:
+- 'afm_workchain': Standard PW calculations from AFM scans  
+- 'constrained_scan': ConstrainedPW calculations from OSCDFT scans
+
+This enables separate plotting of AFM vs constrained calculations.
 
 Usage:
-    from lordcapulet.utils.postprocessing.gather_workchain_data import gather_workchain_data
+    # Extract from all global workchains
+    data = gather_workchain_data()
     
-    # Gather data from workchain with PK 12345 and save to file
-    gather_workchain_data(12345, "workchain_data.json")
+    # Extract from specific workchain  
+    data = gather_workchain_data(workchain_pk=12345)
+    
+    # Filter by source for plotting
+    afm_data = filter_calculations_by_source(data, 'afm_workchain')
+    constrained_data = filter_calculations_by_source(data, 'constrained_scan')
 """
 
 import json
@@ -81,6 +86,72 @@ def is_pw_calculation(node: CalcJobNode) -> bool:
     return False
 
 
+def _determine_calculation_source(calc_node: CalcJobNode) -> str:
+    """
+    Determine the source of a calculation (AFM workchain vs constrained scan).
+    
+    Args:
+        calc_node: AiiDA calculation node
+        
+    Returns:
+        str: 'afm_workchain' for standard PW calculations (typically from AFMScanWorkChain),
+             'constrained_scan' for ConstrainedPW calculations (typically from ConstrainedScanWorkChain),
+             'unknown' if cannot be determined
+    """
+    process_type = getattr(calc_node, 'process_type', '').lower()
+    
+    # ConstrainedPW calculations are from constrained scans
+    if 'lordcapulet.constrained_pw' in process_type or 'constrainedpw' in process_type:
+        return 'constrained_scan'
+    
+    # Standard QE PW calculations are typically from AFM workchains
+    if 'quantumespresso.pw' in process_type:
+        return 'afm_workchain'
+    
+    # Fallback: try to infer from caller workchain by examining the node's ancestry
+    try:
+        # Walk up the call tree to find the parent workchain
+        caller = getattr(calc_node, 'caller', None)
+        if caller:
+            caller_process_type = getattr(caller, 'process_type', '').lower()
+            if 'afmscan' in caller_process_type or 'afm_scan' in caller_process_type:
+                return 'afm_workchain'
+            elif 'constrainedscan' in caller_process_type or 'constrained_scan' in caller_process_type:
+                return 'constrained_scan'
+            elif 'globalconstrained' in caller_process_type or 'global_constrained' in caller_process_type:
+                # For global search, need to check the calculation type itself
+                if 'lordcapulet.constrained_pw' in process_type:
+                    return 'constrained_scan'
+                else:
+                    return 'afm_workchain'
+    except Exception:
+        # If we can't access caller information, continue with other methods
+        pass
+    
+    # Additional heuristic: check input parameters for OSCDFT-specific keys
+    try:
+        if hasattr(calc_node, 'inputs'):
+            inputs = calc_node.inputs
+            # Look for OSCDFT-specific inputs that indicate constrained calculations
+            oscdft_indicators = ['oscdft_card', 'target_matrix', 'occupation_matrix']
+            for key in inputs.keys():
+                if any(indicator in key.lower() for indicator in oscdft_indicators):
+                    return 'constrained_scan'
+            
+            # Check parameters for OSCDFT-related settings
+            if 'parameters' in inputs:
+                params = inputs.parameters
+                if hasattr(params, 'get_dict'):
+                    param_dict = params.get_dict()
+                    # Look for OSCDFT namelist or parameters
+                    if 'OSCDFT' in param_dict or any('oscdft' in str(v).lower() for v in param_dict.values()):
+                        return 'constrained_scan'
+    except Exception:
+        pass
+    
+    return 'unknown'
+
+
 def extract_calculation_data(calc_node: CalcJobNode) -> Dict[str, Any]:
     """
     Extract relevant data from a converged PW/ConstrainedPW calculation.
@@ -96,36 +167,53 @@ def extract_calculation_data(calc_node: CalcJobNode) -> Dict[str, Any]:
               - output_parameters: Output parameters if available
               - output_atomic_occupations: Atomic occupations if available
               - process_type: Type of the calculation process
+              - calculation_source: Tag indicating if from AFM workchain or constrained scan
     """
-    data = {
-        'pk': calc_node.pk,
-        'exit_status': calc_node.exit_status,
-        'process_type': getattr(calc_node, 'process_type', 'unknown'),
-        'inputs': {},
-        'output_parameters': None,
-        'output_atomic_occupations': None
-    }
-    
-    # Extract inputs
     try:
-        inputs = calc_node.inputs
-        for key, input_node in inputs.items():
-            try:
-                # Try to get dictionary representation for Dict nodes
-                if hasattr(input_node, 'get_dict'):
-                    data['inputs'][key] = input_node.get_dict()
-                # For other node types, store basic info
-                else:
-                    data['inputs'][key] = {
-                        'node_type': input_node.node_type,
-                        'pk': input_node.pk,
-                        'uuid': str(input_node.uuid)
-                    }
-            except Exception as e:
-                data['inputs'][key] = f"Error extracting input: {str(e)}"
+        data = {
+            'pk': calc_node.pk,
+            'exit_status': calc_node.exit_status,
+            'process_type': getattr(calc_node, 'process_type', 'unknown'),
+            'calculation_source': _determine_calculation_source(calc_node),
+            'inputs': {},
+            'output_parameters': None,
+            'output_atomic_occupations': None
+        }
+    except Exception as e:
+        print(f"Error creating basic data structure for node {calc_node.pk}: {e}")
+        return None
+    
+    # Extract inputs with proper AiiDA API
+    try:
+        # Check if inputs exist and are accessible
+        if hasattr(calc_node, 'inputs'):
+            # Use the new API: base.links.get_incoming()
+            incoming_links = calc_node.base.links.get_incoming()
+            for link in incoming_links:
+                try:
+                    key = link.link_label
+                    input_node = link.node
+                    
+                    # Try to get dictionary representation for Dict nodes
+                    if hasattr(input_node, 'get_dict'):
+                        data['inputs'][key] = input_node.get_dict()
+                    # For other node types, store basic info
+                    else:
+                        data['inputs'][key] = {
+                            'node_type': getattr(input_node, 'node_type', 'unknown'),
+                            'pk': input_node.pk,
+                            'uuid': str(input_node.uuid)
+                        }
+                except Exception as e:
+                    if hasattr(link, 'link_label'):
+                        data['inputs'][link.link_label] = f"Error extracting input '{link.link_label}': {str(e)}"
+                    else:
+                        data['inputs'][f'link_error_{len(data["inputs"])}'] = f"Error processing input link: {str(e)}"
+        else:
+            data['inputs'] = "Node has no inputs attribute"
                 
     except Exception as e:
-        data['inputs'] = f"Error accessing inputs: {str(e)}"
+        data['inputs'] = f"Error accessing inputs for node {calc_node.pk}: {str(e)}"
     
     # Extract output_parameters
     try:
@@ -153,68 +241,166 @@ def extract_calculation_data(calc_node: CalcJobNode) -> Dict[str, Any]:
     return data
 
 
-def discover_pw_calculations(node, visited: set = None, depth: int = 0, max_depth: int = 50, debug: bool = False) -> List[Tuple[int, int, str]]:
+def discover_global_workchains(group_name: str = None, max_results: int = None) -> List:
     """
-    Recursively discover all converged PW/ConstrainedPW calculations in a workchain.
+    Discover GlobalConstrainedSearchWorkChain workchains as starting points.
     
     Args:
-        node: Starting AiiDA node (workchain or calculation)
-        visited: Set of already visited node PKs to avoid infinite loops
-        depth: Current recursion depth
-        max_depth: Maximum recursion depth to prevent infinite recursion
-        debug: If True, print detailed traversal information
+        group_name: Name of the AiiDA group to search in (optional)
+        max_results: Maximum number of workchains to return (optional)
         
     Returns:
-        list: List of tuples (pk, exit_status, process_type) for converged PW/ConstrainedPW calculations only
+        list: List of GlobalConstrainedSearchWorkChain nodes
     """
-    if visited is None:
-        visited = set()
+    from aiida.orm import QueryBuilder, Group, WorkChainNode
     
-    if depth > max_depth:
-        if debug:
-            warnings.warn(f"Maximum recursion depth ({max_depth}) reached. Stopping traversal.")
-        return []
+    qb = QueryBuilder()
     
-    if node.pk in visited:
-        return []
+    if group_name:
+        try:
+            group = Group.get(label=group_name)
+            qb.append(Group, filters={'id': group.id}, tag='group')
+            qb.append(WorkChainNode, with_group='group', tag='workchain')
+        except Exception as e:
+            print(f"Could not find group '{group_name}': {e}")
+            return []
+    else:
+        qb.append(WorkChainNode, tag='workchain')
     
-    visited.add(node.pk)
+    # Filter for GlobalConstrainedSearchWorkChain
+    qb.add_filter('workchain', {
+        'process_type': {'like': '%GlobalConstrainedSearchWorkChain%'}
+    })
+    
+    qb.order_by({'workchain': {'ctime': 'desc'}})
+    
+    if max_results:
+        qb.limit(max_results)
+    
+    return [result[0] for result in qb.all()]
+
+
+def extract_calculations_from_global_workchain(global_wc, debug: bool = False) -> List[Tuple[int, int, str, str]]:
+    """
+    Extract calculations from a GlobalConstrainedSearchWorkChain with proper source tagging.
+    Top-down approach: AFM workchain -> AFM calculations, Constrained workchain -> Constrained calculations.
+    
+    Args:
+        global_wc: GlobalConstrainedSearchWorkChain node
+        
+    Returns:
+        list: List of tuples (pk, exit_status, process_type, source) for converged calculations
+    """
     calculations = []
     
-    # If current node is a PW/ConstrainedPW calculation, check if converged before adding
-    if isinstance(node, CalcJobNode) and is_pw_calculation(node):
-        process_type = getattr(node, 'process_type', 'unknown')
-        exit_status = getattr(node, 'exit_status', None)
-        
-        if exit_status == 0:  # Only collect converged calculations
-            calculations.append((node.pk, exit_status, process_type))
-            if debug:
-                print(f"{'  ' * depth}Found converged {process_type} calculation: PK {node.pk}")
-        else:
-            if debug:
-                print(f"{'  ' * depth}Skipping non-converged {process_type} calculation: PK {node.pk} (exit_status={exit_status})")
-        
-        return calculations
-    
-    # If it's a workchain, traverse its called links
-    if hasattr(node, 'called'):
-        try:
-            called_nodes = node.called
-            if debug:
-                print(f"{'  ' * depth}Traversing workchain: PK {node.pk}, found {len(called_nodes)} called nodes")
+    try:
+        # Process called workchains to find AFM and constrained scans
+        for called_wc in global_wc.called:
+            process_type = getattr(called_wc, 'process_type', '').lower()
             
-            for called_node in called_nodes:
-                child_calculations = discover_pw_calculations(called_node, visited, depth + 1, max_depth, debug)
-                calculations.extend(child_calculations)
-                
-        except Exception as e:
-            if debug:
-                print(f"{'  ' * depth}Error accessing called nodes for PK {node.pk}: {str(e)}")
+            if 'afmscan' in process_type or 'afm_scan' in process_type:
+                # This is an AFM scan workchain
+                afm_calculations = _extract_pw_calculations_from_workchain(called_wc, 'afm_workchain')
+                calculations.extend(afm_calculations)
+                if debug:
+                    print(f"Found {len(afm_calculations)} AFM calculations from workchain {called_wc.pk}")
+            
+            elif 'constrainedscan' in process_type or 'constrained_scan' in process_type:
+                # This is a constrained scan workchain
+                constrained_calculations = _extract_pw_calculations_from_workchain(called_wc, 'constrained_scan')
+                calculations.extend(constrained_calculations)
+                if debug:
+                    print(f"Found {len(constrained_calculations)} constrained calculations from workchain {called_wc.pk}")
+                        
+    except Exception as e:
+        print(f"Error extracting calculations from global workchain {global_wc.pk}: {e}")
     
     return calculations
 
 
-def discover_all_pw_calculations_for_stats(node, visited: set = None, depth: int = 0, max_depth: int = 50) -> Tuple[int, int, Dict[str, int], Dict[str, int], List[Dict[str, Any]]]:
+def _extract_pw_calculations_from_workchain(workchain, source_tag: str, visited: set = None, max_depth: int = 10) -> List[Tuple[int, int, str, str]]:
+    """
+    Extract all converged PW calculations from a workchain with a specific source tag.
+    
+    Args:
+        workchain: The workchain to extract calculations from
+        source_tag: Tag to assign to calculations ('afm_workchain' or 'constrained_scan')
+        visited: Set of visited node PKs to avoid cycles
+        max_depth: Maximum recursion depth
+        
+    Returns:
+        list: List of tuples (pk, exit_status, process_type, source) for converged calculations
+    """
+    if visited is None:
+        visited = set()
+    
+    if workchain.pk in visited or max_depth <= 0:
+        return []
+    
+    visited.add(workchain.pk)
+    calculations = []
+    
+    try:
+        # Check all called nodes
+        for called_node in workchain.called:
+            if is_pw_calculation(called_node) and called_node.exit_status == 0:
+                calculations.append((
+                    called_node.pk, 
+                    called_node.exit_status, 
+                    getattr(called_node, 'process_type', 'unknown'),
+                    source_tag
+                ))
+            else:
+                # Recursively check sub-workchains
+                sub_calculations = _extract_pw_calculations_from_workchain(
+                    called_node, source_tag, visited, max_depth - 1
+                )
+                calculations.extend(sub_calculations)
+                
+    except Exception as e:
+        print(f"Error processing workchain {workchain.pk}: {e}")
+    
+    return calculations
+
+
+def discover_pw_calculations(group_name: str = None, max_results: int = None, debug: bool = False) -> List[Tuple[int, int, str, str]]:
+    """
+    Discover PW calculations using a top-down approach starting from GlobalConstrainedSearchWorkChain.
+    This is more efficient than bottom-up searching as it directly targets the relevant workchains.
+    
+    Args:
+        group_name: Name of the AiiDA group to search in (optional)
+        max_results: Maximum number of global workchains to process (optional)
+        debug: If True, print detailed information
+        
+    Returns:
+        list: List of tuples (pk, exit_status, process_type, source) for converged PW/ConstrainedPW calculations
+    """
+    global_workchains = discover_global_workchains(group_name, max_results)
+    
+    if debug:
+        print(f"Found {len(global_workchains)} GlobalConstrainedSearchWorkChain instances")
+    
+    all_calculations = []
+    for i, global_wc in enumerate(global_workchains):
+        if debug:
+            print(f"Processing global workchain {i+1}/{len(global_workchains)}: {global_wc.pk}")
+        
+        calculations = extract_calculations_from_global_workchain(global_wc, debug)
+        all_calculations.extend(calculations)
+        
+        if debug:
+            afm_count = sum(1 for calc in calculations if calc[3] == 'afm_workchain')
+            constrained_count = sum(1 for calc in calculations if calc[3] == 'constrained_scan')
+            print(f"  -> Found {afm_count} AFM calculations, {constrained_count} constrained calculations")
+    
+    if debug:
+        print(f"Total: {len(all_calculations)} calculations from {len(global_workchains)} global workchains")
+    
+    return all_calculations
+
+
+def discover_all_pw_calculations_for_stats(node, visited: set = None, depth: int = 0, max_depth: int = 50) -> Tuple[int, int, Dict[str, int], Dict[str, int], Dict[str, int], List[Dict[str, Any]]]:
     """
     Recursively discover ALL PW/ConstrainedPW calculations for statistics purposes.
     
@@ -225,16 +411,16 @@ def discover_all_pw_calculations_for_stats(node, visited: set = None, depth: int
         max_depth: Maximum recursion depth to prevent infinite recursion
         
     Returns:
-        tuple: (total_calcs, converged_calcs, exit_status_counts, calc_type_counts, non_converged_details)
+        tuple: (total_calcs, converged_calcs, exit_status_counts, calc_type_counts, source_counts, non_converged_details)
     """
     if visited is None:
         visited = set()
     
     if depth > max_depth:
-        return 0, 0, {}, {}, []
+        return 0, 0, {}, {}, {}, []
     
     if node.pk in visited:
-        return 0, 0, {}, {}, []
+        return 0, 0, {}, {}, {}, []
     
     visited.add(node.pk)
     
@@ -242,16 +428,19 @@ def discover_all_pw_calculations_for_stats(node, visited: set = None, depth: int
     converged_calcs = 0
     exit_status_counts = {}
     calc_type_counts = {}
+    source_counts = {}
     non_converged_details = []
     
     # If current node is a PW/ConstrainedPW calculation, count it
     if isinstance(node, CalcJobNode) and is_pw_calculation(node):
         process_type = getattr(node, 'process_type', 'unknown')
         exit_status = getattr(node, 'exit_status', None)
+        source = _determine_calculation_source(node)
         
         total_calcs = 1
         calc_type_counts[process_type] = 1
         exit_status_counts[str(exit_status)] = 1
+        source_counts[source] = 1
         
         if exit_status == 0:
             converged_calcs = 1
@@ -259,10 +448,11 @@ def discover_all_pw_calculations_for_stats(node, visited: set = None, depth: int
             non_converged_details.append({
                 'pk': node.pk,
                 'exit_status': exit_status,
-                'process_type': process_type
+                'process_type': process_type,
+                'source': source
             })
         
-        return total_calcs, converged_calcs, exit_status_counts, calc_type_counts, non_converged_details
+        return total_calcs, converged_calcs, exit_status_counts, calc_type_counts, source_counts, non_converged_details
     
     # If it's a workchain, traverse its called links
     if hasattr(node, 'called'):
@@ -270,7 +460,7 @@ def discover_all_pw_calculations_for_stats(node, visited: set = None, depth: int
             called_nodes = node.called
             
             for called_node in called_nodes:
-                child_total, child_conv, child_exit, child_types, child_non_conv = discover_all_pw_calculations_for_stats(
+                child_total, child_conv, child_exit, child_types, child_sources, child_non_conv = discover_all_pw_calculations_for_stats(
                     called_node, visited, depth + 1, max_depth)
                 
                 total_calcs += child_total
@@ -284,18 +474,21 @@ def discover_all_pw_calculations_for_stats(node, visited: set = None, depth: int
                 for calc_type, count in child_types.items():
                     calc_type_counts[calc_type] = calc_type_counts.get(calc_type, 0) + count
                 
+                for source, count in child_sources.items():
+                    source_counts[source] = source_counts.get(source, 0) + count
+                
         except Exception:
             pass  # Silently ignore errors in stats collection
     
-    return total_calcs, converged_calcs, exit_status_counts, calc_type_counts, non_converged_details
+    return total_calcs, converged_calcs, exit_status_counts, calc_type_counts, source_counts, non_converged_details
 
 
-def process_calculations(calculation_list: List[Tuple[int, int, str]], debug: bool = False) -> List[Dict[str, Any]]:
+def process_calculations(calculation_list: List[Tuple[int, int, str, str]], debug: bool = False) -> List[Dict[str, Any]]:
     """
     Process a list of converged calculations and extract data.
     
     Args:
-        calculation_list: List of tuples (pk, exit_status, process_type) - all should be converged
+        calculation_list: List of tuples (pk, exit_status, process_type, source) - all should be converged
         debug: If True, print detailed processing information
         
     Returns:
@@ -305,14 +498,18 @@ def process_calculations(calculation_list: List[Tuple[int, int, str]], debug: bo
     
     if HAS_ALIVE_BAR and len(calculation_list) > 0:
         with alive_bar(len(calculation_list), title="Processing calculations") as bar:
-            for pk, exit_status, process_type in calculation_list:
+            for pk, exit_status, process_type, source in calculation_list:
                 try:
                     calc_node = load_node(pk)
                     calc_data = extract_calculation_data(calc_node)
-                    results.append(calc_data)
-                    
-                    if debug:
-                        print(f"Processed converged {process_type} calculation: PK {pk}")
+                    if calc_data is not None:
+                        results.append(calc_data)
+                        
+                        if debug:
+                            print(f"Processed converged {process_type} calculation: PK {pk} (source: {source})")
+                    else:
+                        if debug:
+                            print(f"Skipped calculation PK {pk} due to extraction error")
                         
                 except Exception as e:
                     if debug:
@@ -322,14 +519,17 @@ def process_calculations(calculation_list: List[Tuple[int, int, str]], debug: bo
     else:
         # Fallback without progress bar
         print(f"Processing {len(calculation_list)} converged calculations...")
-        for i, (pk, exit_status, process_type) in enumerate(calculation_list):
+        for i, (pk, exit_status, process_type, source) in enumerate(calculation_list):
             try:
                 calc_node = load_node(pk)
                 calc_data = extract_calculation_data(calc_node)
-                results.append(calc_data)
+                if calc_data is not None:
+                    results.append(calc_data)
+                else:
+                    print(f"Skipped calculation PK {pk} due to extraction error")
                 
                 if debug:
-                    print(f"Processed converged {process_type} calculation: PK {pk}")
+                    print(f"Processed converged {process_type} calculation: PK {pk} (source: {source})")
                 elif i % max(1, len(calculation_list) // 10) == 0:  # Print progress every 10%
                     progress = (i + 1) / len(calculation_list) * 100
                     print(f"Progress: {progress:.1f}% ({i + 1}/{len(calculation_list)})")
@@ -339,92 +539,144 @@ def process_calculations(calculation_list: List[Tuple[int, int, str]], debug: bo
                     print(f"Error processing calculation PK {pk}: {str(e)}")
     
     return results
-def gather_workchain_data(workchain_pk: int, output_filename: str, debug: bool = False) -> Dict[str, Any]:
+def gather_workchain_data(workchain_pk: int = None, group_name: str = None, output_filename: str = None, max_results: int = None, debug: bool = False) -> Dict[str, Any]:
     """
-    Main function to gather data from a workchain and save to JSON file.
+    Main function to gather data from workchains with intelligent workchain type detection.
+    
+    - If workchain_pk is a GlobalConstrainedSearchWorkChain: uses top-down approach
+    - If workchain_pk is AFMScanWorkChain: extracts AFM calculations only
+    - If workchain_pk is ConstrainedScanWorkChain: extracts constrained calculations only
+    - If no workchain_pk: searches for GlobalConstrainedSearchWorkChain instances
     
     Args:
-        workchain_pk: Primary key of the root workchain
-        output_filename: Name of the output JSON file
-        debug: If True, print detailed traversal information (default: False)
+        workchain_pk: Primary key of a specific workchain (optional)
+        group_name: Name of AiiDA group to search for GlobalConstrainedSearchWorkChain instances (optional)
+        output_filename: Name of the output JSON file (optional)
+        max_results: Maximum number of global workchains to process (optional)
+        debug: If True, print detailed information (default: False)
         
     Returns:
         dict: Complete data dictionary containing all extracted information
         
     Raises:
+        ValueError: If neither workchain_pk nor group_name is provided
         NotExistent: If the workchain node cannot be loaded
         Exception: For other errors during data extraction or file writing
     """
     try:
-        # Load the root workchain node
-        root_node = load_node(workchain_pk)
-        print(f"Loading workchain: PK {workchain_pk}, type: {type(root_node).__name__}")
+        extraction_method = "unknown"
+        processed_workchain_info = None
         
-        # Phase 1: Discover all PW/ConstrainedPW calculations for statistics
-        print("Phase 1: Discovering all PW/ConstrainedPW calculations for statistics...")
-        total_calcs, converged_count, exit_status_counts, calc_type_counts, non_converged_details = discover_all_pw_calculations_for_stats(root_node)
+        if workchain_pk is not None:
+            # Load and identify workchain type
+            root_node = load_node(workchain_pk)
+            process_type = getattr(root_node, 'process_type', '').lower()
+            
+            print(f"Loading workchain: PK {workchain_pk}, type: {type(root_node).__name__}")
+            print(f"Process type: {getattr(root_node, 'process_type', 'unknown')}")
+            
+            processed_workchain_info = {
+                'pk': workchain_pk,
+                'process_type': getattr(root_node, 'process_type', 'unknown'),
+                'node_type': type(root_node).__name__
+            }
+            
+            if 'globalconstrained' in process_type or 'global_constrained' in process_type:
+                # GlobalConstrainedSearchWorkChain - use top-down approach
+                print("Detected GlobalConstrainedSearchWorkChain - using top-down approach")
+                extraction_method = "top_down_global_search"
+                converged_calculation_list = extract_calculations_from_global_workchain(root_node, debug)
+                
+            elif 'afmscan' in process_type or 'afm_scan' in process_type:
+                # AFMScanWorkChain - extract AFM calculations only
+                print("Detected AFMScanWorkChain - extracting AFM calculations")
+                extraction_method = "afm_workchain_direct"
+                converged_calculation_list = _extract_pw_calculations_from_workchain(root_node, 'afm_workchain')
+                
+            elif 'constrainedscan' in process_type or 'constrained_scan' in process_type:
+                # ConstrainedScanWorkChain - extract constrained calculations only  
+                print("Detected ConstrainedScanWorkChain - extracting constrained calculations")
+                extraction_method = "constrained_workchain_direct"
+                converged_calculation_list = _extract_pw_calculations_from_workchain(root_node, 'constrained_scan')
+                
+            else:
+                # Unknown workchain type - try generic approach
+                print(f"Unknown workchain type, trying generic extraction approach")
+                extraction_method = "generic_workchain"
+                converged_calculation_list = _extract_pw_calculations_from_workchain(root_node, 'unknown')
+            
+        elif group_name is not None:
+            # Process all GlobalConstrainedSearchWorkChain instances from a group or globally
+            print("Phase 1: Discovering GlobalConstrainedSearchWorkChain instances...")
+            converged_calculation_list = discover_pw_calculations(group_name=group_name, max_results=max_results, debug=debug)
+            
+        else:
+            # Process all GlobalConstrainedSearchWorkChain instances globally
+            print("Phase 1: Discovering all GlobalConstrainedSearchWorkChain instances...")
+            converged_calculation_list = discover_pw_calculations(max_results=max_results, debug=debug)
         
-        print(f"Found {total_calcs} total PW/ConstrainedPW calculations ({converged_count} converged, {total_calcs - converged_count} non-converged)")
+        print(f"Found {len(converged_calculation_list)} converged calculations")
         
-        # Phase 2: Discover only converged calculations for processing
-        print("Phase 2: Collecting converged calculations for processing...")
-        converged_calculation_list = discover_pw_calculations(root_node, debug=debug)
-        
-        # Phase 3: Process the converged calculations and extract data
-        print("Phase 3: Processing converged calculations and extracting data...")
+        # Process the converged calculations and extract data
+        print("Phase 2: Processing converged calculations and extracting data...")
         calculations_data = process_calculations(converged_calculation_list, debug=debug)
         
-        # Build statistics dictionary
-        statistics = {
-            'total_pw_calculations': total_calcs,
-            'converged_calculations': converged_count,
-            'non_converged_calculations': total_calcs - converged_count,
-            'exit_status_counts': exit_status_counts,
-            'calculation_types': calc_type_counts,
-            'non_converged_details': non_converged_details
-        }
+        # Build statistics from the converged calculations
+        source_counts = {}
+        calc_type_counts = {}
         
-        # Calculate additional statistics
-        convergence_rate = (statistics['converged_calculations'] / statistics['total_pw_calculations'] * 100) if statistics['total_pw_calculations'] > 0 else 0
+        for pk, exit_status, process_type, source in converged_calculation_list:
+            source_counts[source] = source_counts.get(source, 0) + 1
+            calc_type_counts[process_type] = calc_type_counts.get(process_type, 0) + 1
+        
+        total_converged = len(converged_calculation_list)
+        
+        statistics = {
+            'converged_calculations': total_converged,
+            'calculation_types': calc_type_counts,
+            'calculation_sources': source_counts
+        }
         
         # Print statistics
         print("\n" + "="*50)
-        print("WORKCHAIN STATISTICS:")
+        print("WORKCHAIN STATISTICS (Top-down approach):")
         print("="*50)
-        print(f"Total PW/ConstrainedPW calculations found: {statistics['total_pw_calculations']}")
-        print(f"Converged calculations: {statistics['converged_calculations']}")
-        print(f"Non-converged calculations: {statistics['non_converged_calculations']}")
-        print(f"Convergence rate: {convergence_rate:.1f}%")
+        print(f"Converged calculations processed: {statistics['converged_calculations']}")
         
         print("\nCalculation types:")
         for calc_type, count in statistics['calculation_types'].items():
             print(f"  {calc_type}: {count}")
         
-        print("\nExit status distribution:")
-        for exit_status, count in statistics['exit_status_counts'].items():
-            status_name = "SUCCESS" if exit_status == "0" else f"ERROR_{exit_status}"
-            print(f"  {status_name}: {count}")
+        print("\nCalculation sources:")
+        for source, count in statistics['calculation_sources'].items():
+            print(f"  {source}: {count}")
         
-        if statistics['non_converged_calculations'] > 0:
-            print(f"\nNon-converged calculations details:")
-            for detail in statistics['non_converged_details'][:5]:  # Show first 5
-                print(f"  PK {detail['pk']}: exit_status={detail['exit_status']}, type={detail['process_type']}")
-            if len(statistics['non_converged_details']) > 5:
-                print(f"  ... and {len(statistics['non_converged_details']) - 5} more")
-        
+        print("\nNote: This top-down approach processes only converged calculations from GlobalConstrainedSearchWorkChain instances.")
         print("="*50)
         
-        # Add convergence rate to statistics
-        statistics['convergence_rate_percent'] = round(convergence_rate, 2)
-        
         # Prepare final data structure
+        metadata = {
+            'total_calculations_found': len(calculations_data),
+            'extraction_method': extraction_method,
+            'extraction_timestamp': datetime.now().isoformat()
+        }
+        
+        # Add specific metadata based on extraction method
+        if processed_workchain_info:
+            metadata.update({
+                'workchain_pk': processed_workchain_info['pk'],
+                'workchain_process_type': processed_workchain_info['process_type'],
+                'workchain_node_type': processed_workchain_info['node_type']
+            })
+        else:
+            metadata.update({
+                'group_name': group_name,
+                'max_results': max_results,
+                'global_workchains_processed': len(discover_global_workchains(group_name, max_results)) if not processed_workchain_info else None
+            })
+        
         output_data = {
-            'metadata': {
-                'root_workchain_pk': workchain_pk,
-                'root_workchain_type': getattr(root_node, 'process_type', type(root_node).__name__),
-                'total_calculations_found': len(calculations_data),
-                'extraction_timestamp': datetime.now().isoformat()
-            },
+            'metadata': metadata,
             'statistics': statistics,
             'calculations': {}
         }
@@ -434,24 +686,79 @@ def gather_workchain_data(workchain_pk: int, output_filename: str, debug: bool =
             pk = calc_data['pk']
             output_data['calculations'][str(pk)] = calc_data
         
-        # Save to JSON file
-        output_path = Path(output_filename)
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(output_data, f, indent=2, ensure_ascii=False)
+        # Save to JSON file if filename provided
+        if output_filename:
+            output_path = Path(output_filename)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(output_data, f, indent=2, ensure_ascii=False)
+            print(f"Data saved to: {output_path.absolute()}")
         
         print(f"\nData extraction completed successfully!")
-        print(f"Total calculations found: {statistics['total_pw_calculations']} ({statistics['converged_calculations']} converged, {statistics['non_converged_calculations']} non-converged)")
-        print(f"Convergence rate: {convergence_rate:.1f}%")
-        print(f"Data saved to: {output_path.absolute()}")
+        print(f"Total converged calculations processed: {statistics['converged_calculations']}")
+        print(f"AFM workchain calculations: {statistics['calculation_sources'].get('afm_workchain', 0)}")
+        print(f"Constrained scan calculations: {statistics['calculation_sources'].get('constrained_scan', 0)}")
         
         return output_data
         
     except NotExistent:
-        raise NotExistent(f"Could not load node with PK {workchain_pk}. Please check that the PK is correct.")
+        if workchain_pk:
+            raise NotExistent(f"Could not load node with PK {workchain_pk}. Please check that the PK is correct.")
+        else:
+            raise NotExistent("Could not find the specified group or workchain nodes.")
     
     except Exception as e:
         print(f"Error during data extraction: {str(e)}")
         raise
+
+
+def filter_calculations_by_source(data: Dict[str, Any], source_filter: str) -> Dict[str, Any]:
+    """
+    Filter calculations from gathered data by their source.
+    
+    Args:
+        data: Data dictionary from gather_workchain_data
+        source_filter: Source to filter by ('afm_workchain', 'constrained_scan', or 'unknown')
+        
+    Returns:
+        dict: Filtered calculations dictionary with same structure but only matching calculations
+    """
+    filtered_calculations = {}
+    
+    for pk, calc_data in data['calculations'].items():
+        if calc_data.get('calculation_source') == source_filter:
+            filtered_calculations[pk] = calc_data
+    
+    # Create filtered data structure
+    filtered_data = {
+        'metadata': data['metadata'].copy(),
+        'statistics': data['statistics'].copy(),
+        'calculations': filtered_calculations
+    }
+    
+    # Update metadata to reflect filtering
+    filtered_data['metadata']['total_calculations_found'] = len(filtered_calculations)
+    filtered_data['metadata']['filtered_by_source'] = source_filter
+    
+    return filtered_data
+
+
+def get_calculation_sources_summary(data: Dict[str, Any]) -> Dict[str, int]:
+    """
+    Get a summary of calculation sources from gathered data.
+    
+    Args:
+        data: Data dictionary from gather_workchain_data
+        
+    Returns:
+        dict: Dictionary with source names as keys and counts as values
+    """
+    source_counts = {}
+    
+    for calc_data in data['calculations'].values():
+        source = calc_data.get('calculation_source', 'unknown')
+        source_counts[source] = source_counts.get(source, 0) + 1
+    
+    return source_counts
 
 
 if __name__ == "__main__":
@@ -466,11 +773,31 @@ if __name__ == "__main__":
                        help="Maximum recursion depth (default: 50)")
     parser.add_argument("--debug", action="store_true", 
                        help="Print detailed traversal information")
+    parser.add_argument("--filter-source", choices=['afm_workchain', 'constrained_scan', 'unknown'],
+                       help="Filter calculations by source type")
     
     args = parser.parse_args()
     
     try:
-        gather_workchain_data(args.pk, args.output, debug=args.debug)
+        data = gather_workchain_data(args.pk, args.output, debug=args.debug)
+        
+        # If filtering requested, create filtered file
+        if args.filter_source:
+            filtered_data = filter_calculations_by_source(data, args.filter_source)
+            filtered_filename = args.output.replace('.json', f'_filtered_{args.filter_source}.json')
+            
+            with open(filtered_filename, 'w', encoding='utf-8') as f:
+                json.dump(filtered_data, f, indent=2, ensure_ascii=False)
+            
+            print(f"\nFiltered data ({args.filter_source}) saved to: {filtered_filename}")
+            print(f"Filtered calculations count: {len(filtered_data['calculations'])}")
+            
+        # Print source summary
+        source_summary = get_calculation_sources_summary(data)
+        print(f"\nCalculation sources summary:")
+        for source, count in source_summary.items():
+            print(f"  {source}: {count}")
+            
     except Exception as e:
         print(f"Failed to extract data: {e}")
         exit(1)

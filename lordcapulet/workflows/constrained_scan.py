@@ -30,6 +30,8 @@ class ConstrainedScanWorkChain(WorkChain):
         spec.input('oscdft_card', valid_type=Dict, help='OSCDFT parameters')
         spec.input('occupation_matrices_list', valid_type=List, 
                   help='List of target occupation matrices [iproposal][iatom][ispin][iorb][iorb]')
+        spec.input('walltime_hours', valid_type=Float, default=lambda: Float(1.0), 
+                  help='Walltime in hours for each constrained calculation (default: 1 hour)')
         
         # Optional pseudo family string (fallback to hardcoded if not provided)
         # spec.input('pseudo_family_string', valid_type=Str, 
@@ -101,11 +103,16 @@ class ConstrainedScanWorkChain(WorkChain):
             # target_matrix = [np.array(target_matrix[iatom]) for iatom in range(natoms)]
             builder.target_matrix = target_matrix_dict
             
-            # Set computational options
-            # builder.metadata.options = {
-            #     'resources': {'num_machines': 1}, 
-            #     'withmpi': True
-            # }
+            # Set computational options with configurable walltime
+            walltime_hours = self.inputs.walltime_hours.value
+            walltime_str = f"{int(walltime_hours):02d}:{int((walltime_hours % 1) * 60):02d}:00"
+            builder.metadata = {
+                'options': {
+                    'resources': {'num_machines': 1}, 
+                    'withmpi': True,
+                    'max_wallclock_seconds': int(walltime_hours * 3600)
+                }
+            }
 
             
             # Enable parsing of occupation matrices and add oscdft flag

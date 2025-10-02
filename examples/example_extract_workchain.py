@@ -1,88 +1,66 @@
 #!/usr/bin/env python3
 """
-Example script demonstrating how to use the gather_workchain_data function.
+Simple example: Extract calculations from a workchain and save to JSON.
 
-This script shows different ways to call the data gathering function and 
-provides example usage patterns.
+Usage: python example_extract_workchain.py
 """
 #%%
+import json
+import aiida
 from lordcapulet.utils.postprocessing.gather_workchain_data import gather_workchain_data
+# aiida profile load
+aiida.load_profile()
 
-def analyze_statistics_example():
-    """Example showing how to analyze the extracted statistics."""
-    print("Example 3: Analyzing extracted statistics")
+
+def extract_workchain_to_json(workchain_pk, output_file=None):
+    """
+    Extract all calculations from a workchain and save to JSON.
     
-    # This would use real data from a previous run
+    Args:
+        workchain_pk (int): Primary key of the workchain to process
+        output_file (str, optional): Output JSON filename. If None, uses workchain_pk.json
+        
+    Returns:
+        dict: Extracted data with calculations, metadata, and statistics
+    """
+    if output_file is None:
+        output_file = f"workchain_{workchain_pk}_data.json"
+    
+    print(f"Extracting calculations from workchain {workchain_pk}...")
+    
+    # Extract data from the workchain
+    data = gather_workchain_data(workchain_pk=workchain_pk, output_filename=output_file, debug=True)
+    
+    # Print summary
+    print(f"\nExtraction complete!")
+    
+    # Debug: print available metadata keys
+    print(f"Available metadata keys: {list(data['metadata'].keys())}")
+    
+    # Print workchain info if available
+    if 'workchain_process_type' in data['metadata']:
+        print(f"Workchain type: {data['metadata']['workchain_process_type']}")
+    else:
+        print(f"Workchain process type not available in metadata")
+    
+    print(f"Total calculations found: {data['metadata']['total_calculations_found']}")
+    print(f"Extraction method: {data['metadata']['extraction_method']}")
+    
+    print(f"Source breakdown:")
+    for source, count in data['statistics']['calculation_sources'].items():
+        print(f"  {source}: {count}")
+    print(f"Data saved to: {output_file}")
+    
+    return data
+#%%
+
     # workchain_pk = 19232 # FeO
     # workchain_pk = 24930 # CoO
     # workchain_pk = 25730 # CuO
     # workchain_pk = 36461 # VO
-    workchain_pk = 36496 # CrO
-
-    output_file = "analysis_data.json"
-    
-    try:
-        data = gather_workchain_data(workchain_pk, output_file)
-        stats = data['statistics']
-        
-        print(f"\nDetailed Analysis for Workchain {workchain_pk}:")
-        print(f"Total calculations: {stats['total_pw_calculations']}")
-        print(f"Success rate: {stats['convergence_rate_percent']:.1f}%")
-        
-        # Identify most problematic exit status
-        non_zero_exits = {k: v for k, v in stats['exit_status_counts'].items() if k != "0"}
-        if non_zero_exits:
-            most_common_error = max(non_zero_exits, key=non_zero_exits.get)
-            print(f"Most common error: exit_status {most_common_error} ({non_zero_exits[most_common_error]} occurrences)")
-        
-        # Show calculation type efficiency
-        print("\nCalculation type analysis:")
-        for calc_type, total_count in stats['calculation_types'].items():
-            # This is a simplified analysis - in practice you'd need to track
-            # convergence per calculation type
-            print(f"  {calc_type}: {total_count} calculations")
-        
-    except Exception as e:
-        print(f"Error in analysis: {e}")
-#%%
-import aiida
-aiida.load_profile()
-analyze_statistics_example()
-
-#%%
-if __name__ == "__main__":
-    # You can run this script directly or import the function
-    print("LordCapulet Workchain Data Gatherer")
-    print("="*40)
-    
-    # Uncomment the line below to run the examples
-    # example_usage()
-    # analyze_statistics_example()
-    
-    # Or use command line arguments
-    import sys
-    if len(sys.argv) == 3:
-        try:
-            pk = int(sys.argv[1])
-            output_file = sys.argv[2]
-            data = gather_workchain_data(pk, output_file)
-            
-            # Print quick summary
-            stats = data['statistics']
-            print(f"\nQuick Summary:")
-            print(f"Total calculations: {stats['total_pw_calculations']}")
-            print(f"Converged: {stats['converged_calculations']} ({stats['convergence_rate_percent']}%)")
-            print(f"Failed: {stats['non_converged_calculations']}")
-            
-        except ValueError:
-            print("Usage: python example_usage.py <workchain_pk> <output_file>")
-            print("       where workchain_pk is an integer")
-    elif len(sys.argv) != 1:
-        print("Usage: python example_usage.py <workchain_pk> <output_file>")
-        print("Example: python example_usage.py 12345 my_data.json")
-    else:
-        print("Edit this script to use your workchain PKs, or run with arguments:")
-        print("python example_usage.py <workchain_pk> <output_file>")
-        print("\nAvailable examples:")
-        print("- example_usage(): Basic usage and multiple workchain processing") 
-        print("- analyze_statistics_example(): Statistical analysis of extracted data")
+    # workchain_pk = 59855 # UO2
+# data = extract_workchain_to_json(49395)
+# data = extract_workchain_to_json(24930, output_file = "CoO_scan_data.json")
+# data = extract_workchain_to_json(19232, output_file = "FeO_scan_data.json")
+data = extract_workchain_to_json(59855, output_file = "UO2_scan_data.json")
+# %%

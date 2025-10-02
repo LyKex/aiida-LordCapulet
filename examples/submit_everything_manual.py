@@ -8,6 +8,9 @@ from aiida.orm import StructureData
 from aiida_quantumespresso.data.hubbard_structure import HubbardStructureData
 from ase.io import read
 from aiida.orm import List
+
+# Load AiiDA profile
+aiida.load_profile()
 #%%
 
 atoms = read('NiO.scf.in', format='espresso-in')
@@ -129,15 +132,20 @@ inputs = {
 from lordcapulet.workflows import AFMScanWorkChain
 from aiida.engine import submit
 
-wc = submit(AFMScanWorkChain, **inputs)
+# wc = submit(AFMScanWorkChain, **inputs)
 
 #print the workchain PK
-print(f"Submitted AFMScanWorkChain with PK = {wc.pk}")
+# print(f"Submitted AFMScanWorkChain with PK = {wc.pk}")
 
 
 #%% 
 from aiida.orm import load_node
 from lordcapulet.functions import aiida_propose_occ_matrices_from_results
+
+# load node
+
+# wc = load_node(48099)
+wc = load_node(59516) # UO2 
 
 list_node = wc.outputs.all_occupation_matrices
 pk_list = list_node.get_list()
@@ -145,14 +153,61 @@ pk_list = list_node.get_list()
 
 aiida_list_proposals = aiida_propose_occ_matrices_from_results(
     pk_list = list_node,  
-    N=4,
+    N=5,
     debug=True,
     mode='random',
+    tm_atoms=tm_atoms,
     # mode='read',
     # readfile=Str('NiO_mixing_lTF_beta0.3_oscdft_data.json')
 )
 
 print(f"Created Dict nodes with PKs: " + str(aiida_list_proposals.get_list()))
+#%%
+# load the first node and look at the matrix
+first_node = load_node(aiida_list_proposals[0])
+print(f"Loaded node with PK: {first_node.pk}")
+matrix = first_node.get_dict()['matrix']
+
+with np.printoptions(precision=3, suppress=True):
+    print("Proposed occupation matrix:")
+    # first matrix is up, second is down
+    print(np.array(matrix[0]).real)
+    print(np.array(matrix[1]).real)
+    # print sum of traces over up and down
+    trace_up = np.trace(np.array(matrix[0][0]))
+    trace_down = np.trace(np.array(matrix[0][1]))
+    print(f"Trace up: {trace_up}, Trace down: {trace_down}")
+    print(f"Total trace: {trace_up + trace_down}")
+    
+# print(np.array(first_node.get_dict()['matrix']))
+# #%% check randomization manually
+# from importlib import reload
+# from lordcapulet.utils.rotation_matrices import rotate_QE_matrix, spherical_to_cubic_rotation
+# from lordcapulet.functions.proposal_modes.random_mode import _apply_random_rotation, propose_random_constraints, _calculate_average_traces
+
+# # wc = load_node(48099)
+# wc = load_node(59516) # UO2 
+
+# list_node = wc.outputs.all_occupation_matrices
+# pk_list = list_node.get_list()
+
+# occ_matrices = []
+# for pk in pk_list:
+#     node = load_node(pk)
+#     if node.__class__.__name__ == "Dict":
+#         occupation_matrix = node.get_dict()
+#         occ_matrices.append(occupation_matrix)
+
+# average_traces = _calculate_average_traces(occ_matrices, natoms=2)
+
+# rot_matrix = spherical_to_cubic_rotation(dim=7, convention='qe')
+
+# identity  = rot_matrix @ rot_matrix.T.conj()
+
+# proposed = propose_random_constraints(occ_matrices, natoms=2,  N=1, debug=True, target_traces=[5, 5], randomize_oxidation=False)
+
+
+
 #%%
 # check by loading the first node
 first_node = load_node(aiida_list_proposals[3])
@@ -171,6 +226,7 @@ code = aiida.orm.load_code('pwx_const_debug@daint-debug')
 
 oscdft_card = Dict(dict={
     'oscdft_type': 2,
+    # 'n_oscdft': 100,
     'n_oscdft': 100,
     'constraint_strength': 1.0,
     'constraint_conv_thr': 0.005,

@@ -20,7 +20,9 @@ class AFMScanWorkChain(WorkChain):
         # spec.input('pseudos', valid_type=Dict)
         spec.input('code', valid_type=Code)
         spec.input('tm_atoms', valid_type=List)
-        spec.input('magnitude', valid_type=Float, default=Float(0.5))  
+        spec.input('magnitude', valid_type=Float, default=Float(0.5))
+        spec.input('walltime_hours', valid_type=Float, default=lambda: Float(1.0), 
+                  help='Walltime in hours for each AFM calculation (default: 1 hour)')  
         spec.outline(
             cls.prepare_configs,
             cls.run_all,
@@ -58,8 +60,16 @@ class AFMScanWorkChain(WorkChain):
 
             builder.parameters['SYSTEM']['starting_magnetization'] = starting_magnetization
             
-            # Set default metadata for calculations
-            builder.metadata = {'options': {'resources': {'num_machines': 1}, 'withmpi': True}}
+            # Set metadata for calculations with configurable walltime
+            walltime_hours = self.inputs.walltime_hours.value
+            walltime_str = f"{int(walltime_hours):02d}:{int((walltime_hours % 1) * 60):02d}:00"
+            builder.metadata = {
+                'options': {
+                    'resources': {'num_machines': 1}, 
+                    'withmpi': True,
+                    'max_wallclock_seconds': int(walltime_hours * 3600)
+                }
+            }
             
             # <<< CORRECT KEY FOR OCCUPATION MATRICES >>>
             builder.settings = Dict(dict={'parser_options': {'parse_atomic_occupations': True}})
