@@ -27,6 +27,7 @@ class AFMScanWorkChain(WorkChain):
             cls.gather_results,
         )
         spec.output('all_occupation_matrices', valid_type=List)
+        spec.output('calculation_pks', valid_type=List)
 
     def prepare_configs(self):
         tm_atoms = self.inputs.tm_atoms.get_list()
@@ -80,12 +81,39 @@ class AFMScanWorkChain(WorkChain):
     # here one needs to also check if the calculation
     # ends with any exit code other than 0
     # if so, we should not store the occupation matrix
+    # def gather_results(self):
+    #     matrices = []
+    #     for calc in self.ctx.calcs:
+    #         if 'output_atomic_occupations' in calc.outputs and calc.exit_status == 0:
+    #             pk = calc.outputs.output_atomic_occupations.pk
+    #         else:
+    #             pk = -1  # Or any sentinel value you prefer for "no matrix"
+    #             self.report(f"Calculation {i+1} completed but no occupation matrix found")
+    #         matrices.append(pk)
+    #     self.out('all_occupation_matrices', List(list=matrices).store())
+    
     def gather_results(self):
+        """
+        Collect the PKs results from all calculations.
+        """
         matrices = []
-        for calc in self.ctx.calcs:
-            if 'output_atomic_occupations' in calc.outputs and calc.exit_status == 0:
+        calculation_pks = []
+        
+        for i, calc in enumerate(self.ctx.calcs):
+            calculation_pks.append(calc.pk)
+            
+            if 'output_atomic_occupations' in calc.outputs:
+                # Store the PK of the output occupation matrix
                 pk = calc.outputs.output_atomic_occupations.pk
+                matrices.append(pk)
+                self.report(f"Calculation {i+1} completed successfully with occupation matrix PK: {pk}")
             else:
-                pk = -1  # Or any sentinel value you prefer for "no matrix"
-            matrices.append(pk)
+                # Use -1 as sentinel value for failed calculations
+                # matrices.append(-1)
+                self.report(f"Calculation {i+1} completed but no occupation matrix found")
+        
+        # Store outputs
         self.out('all_occupation_matrices', List(list=matrices).store())
+        self.out('calculation_pks', List(list=calculation_pks).store())
+        
+        self.report(f"Magnetic scan completed. {len([m for m in matrices if m != -1])}/{len(matrices)} calculations successful")

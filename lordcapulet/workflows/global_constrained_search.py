@@ -144,6 +144,7 @@ class GlobalConstrainedSearchWorkChain(WorkChain):
             N=self.inputs.N,
             debug=self.inputs.proposal_debug,
             mode=self.inputs.proposal_mode,
+            tm_atoms=self.inputs.afm.tm_atoms,
             **proposal_kwargs
         )
         
@@ -253,6 +254,7 @@ class GlobalConstrainedSearchWorkChain(WorkChain):
                 N=self.inputs.N,
                 debug=self.inputs.proposal_debug,
                 mode=self.inputs.proposal_mode,
+                tm_atoms=self.inputs.constrained.tm_atoms,
                 **proposal_kwargs
             )
             

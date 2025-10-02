@@ -20,7 +20,7 @@ def redirect_print_report(func, *args, **kwargs):
 
 @calcfunction
 def aiida_propose_occ_matrices_from_results(
-    pk_list, N=8, debug=False, mode='random', *, self=None, **kwargs):
+    pk_list, N=8, debug=False, mode='random', *, self=None, tm_atoms=None, **kwargs):
     """
     AiiDA calcfunction that takes a list of PKs
     and returns a list of PKs of Dict nodes that are themselves stored
@@ -76,6 +76,16 @@ def aiida_propose_occ_matrices_from_results(
         self.report(f"Loaded {len(occ_matrices)} occupation matrices from nodes with PKs: {pk_list.get_list()}")
         self.report(f"Using proposal mode: {mode.value} with N = {N.value} samples per generation")
 
+
+
+    # TEMPORARY FIX, remove all atoms in the occ_matrices that are not in tm_atoms
+    if tm_atoms is not None:
+        for i, occ_matrix in enumerate(occ_matrices):
+            # trim all entries that are not f"iatom+1"
+            occ_matrices[i] = { f"{iatom+1}": occ_matrix[f"{iatom+1}"] for iatom in range(len(tm_atoms)) if f"{iatom+1}" in occ_matrix }
+    print(occ_matrices)
+
+
     # magic happens here
     proposals, to_report = redirect_print_report(
                                     propose_new_constraints,
@@ -85,6 +95,8 @@ def aiida_propose_occ_matrices_from_results(
                                     mode=mode.value,
                                     **kwargs_internal
                                     )
+
+    # this does not work as it should, needs refactoring
 
     if self is not None:
         self.report(to_report)
@@ -102,7 +114,6 @@ def aiida_propose_occ_matrices_from_results(
     return List(list=[node.pk for node in dict_nodes])
 
 
-# define a function that takes a list of dictionaries and N and returns a list of N dictionaries
 def propose_new_constraints(occ_matr_list, N, mode='random', debug=True, **kwargs):
     """
     !!IMPORTANT!! THIS FUNCTION SHOULD NOT GET ANY AIIDA TYPES AS INPUT

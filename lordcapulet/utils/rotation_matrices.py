@@ -16,8 +16,8 @@ def spherical_to_cubic_rotation(dim=5, convention='qe'):
     sqrt2_inv = 1 / np.sqrt(2)
     if convention != 'qe':
         raise ValueError("Only 'qe' convention is supported for now.")
-    if dim != 5:
-        raise ValueError("Only dimension 5 is supported for d-orbitals.")
+    if dim not in [5, 7]:
+        raise ValueError("Only dimension 5 or 7 is supported for Hubbard orbitals.")
     
 
     if convention == 'qe':
@@ -36,6 +36,24 @@ def spherical_to_cubic_rotation(dim=5, convention='qe'):
             # Francesco also noticed something similar, we need to check  this
             # check and one might want to swap the last two rows
             return T  
+        if dim == 7:
+            # use 0, cos, sin, cos, sin, cos, sin convention
+            # Rows: z(z^2-3/5r^2), xz^2, yz^2, z(x^2-y^2), xyz, x(x^2-3y^2), y(3x^2-y^2) (QE order)
+            # Cols: Y_3^-3, Y_3^-2, Y_3^-1, Y_3^0, Y_3^1, Y_3^2, Y_3^3
+
+            # this needs to be double checked, for proposal you actually just use this to rotate
+            # at random so it is not super critical for the moment
+            
+            T = np.array([
+                [0, 0, 0, 1, 0, 0, 0],  
+                [0,0, sqrt2_inv, 0, -sqrt2_inv, 0, 0],
+                [0,0, 1j*sqrt2_inv, 0, 1j*sqrt2_inv, 0, 0],
+                [0, sqrt2_inv, 0, 0, 0, -sqrt2_inv, 0],
+                [0, 1j*sqrt2_inv, 0, 0, 0, 1j*sqrt2_inv, 0],
+                [sqrt2_inv, 0, 0, 0, 0, 0, -sqrt2_inv],
+                [1j*sqrt2_inv, 0, 0, 0, 0, 0, 1j*sqrt2_inv]
+            ])
+            return T
 
 def get_angular_momentum_operators(l):
     """

@@ -134,7 +134,7 @@ class ConstrainedScanWorkChain(WorkChain):
                 self.report(f"Calculation {i+1} completed successfully with occupation matrix PK: {pk}")
             else:
                 # Use -1 as sentinel value for failed calculations
-                matrices.append(-1)
+                # matrices.append(-1)
                 self.report(f"Calculation {i+1} completed but no occupation matrix found")
         
         # Store outputs

@@ -38,12 +38,12 @@ class TestSphericalToCubicRotation:
 
     def test_invalid_convention(self):
         """Test that invalid conventions raise ValueError."""
-        with pytest.raises(ValueError, match="Only 'qe' convention is supported"):
+        with pytest.raises(ValueError, match="Only 'qe' convention is supported for now."):
             spherical_to_cubic_rotation(dim=5, convention='invalid')
 
     def test_invalid_dimension(self):
         """Test that invalid dimensions raise ValueError."""
-        with pytest.raises(ValueError, match="Only dimension 5 is supported"):
+        with pytest.raises(ValueError, match="Only dimension 5 or 7 is supported for Hubbard orbitals."):
             spherical_to_cubic_rotation(dim=3, convention='qe')
 
     def test_matrix_properties(self):
@@ -55,14 +55,15 @@ class TestSphericalToCubicRotation:
         np.testing.assert_allclose(identity, np.eye(5), atol=1e-10)
         
         # Check matrix elements are as expected for QE convention
+        sqrt2_inv = 1 / np.sqrt(2)
         expected_matrix = np.array([
-            [0, 0, 1, 0, 0],                               # r^2-3z^2 ~ Y_2^0
-            [0, -1j/np.sqrt(2), 0, 1j/np.sqrt(2), 0],      # xz ~ (Y_2^1 - Y_2^-1)
-            [0, 1/np.sqrt(2), 0, 1/np.sqrt(2), 0],         # yz ~ (Y_2^1 + Y_2^-1)
-            [-1j/np.sqrt(2), 0, 0, 0, 1j/np.sqrt(2)],      # xy ~ (Y_2^2 - Y_2^-2)
-            [1/np.sqrt(2), 0, 0, 0, 1/np.sqrt(2)]          # x^2-y^2 ~ (Y_2^2 + Y_2^-2)
-        ])
-        
+                [0, 0, 1, 0, 0],                                     # r^2-3z^2 ~ Y_2^0
+                [0, sqrt2_inv, 0, -sqrt2_inv, 0],                    # xz ~ 1/sqrt(2) * (Y_2^-1 - Y_2^1)
+                [0, 1j * sqrt2_inv, 0, 1j * sqrt2_inv, 0],           # yz ~ i/sqrt(2) * (Y_2^-1 + Y_2^1)
+                [1j * sqrt2_inv, 0, 0, 0, -1j * sqrt2_inv],          # xy ~ i/sqrt(2) * (Y_2^-2 - Y_2^2)
+                [sqrt2_inv, 0, 0, 0, sqrt2_inv]                      # x^2-y^2 ~ 1/sqrt(2) * (Y_2^-2 + Y_2^2)
+            ])
+
         np.testing.assert_allclose(rot_matrix, expected_matrix, atol=1e-10)
 
     def test_simple_density_matrix_rotation(self):
