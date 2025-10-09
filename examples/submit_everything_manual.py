@@ -31,7 +31,7 @@ def tag_and_list_atoms(atoms):
         'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn',
         'Y', 'Zr', 'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd',
         'La', 'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg',
-        'Ac', 'Rf', 'Db', 'Sg', 'Bh', 'Hs', 'Mt', 'Ds', 'Rg', 'Cn'
+        'Ac', 'Rf', 'Db', 'Sg', 'Bh', 'Hs', 'Mt', 'Ds', 'Rg', 'Cn', 'U'
     }
 
     tm_counts = {}
@@ -138,22 +138,25 @@ from aiida.engine import submit
 # print(f"Submitted AFMScanWorkChain with PK = {wc.pk}")
 
 
-#%% 
+#%%
+ 
 from aiida.orm import load_node
 from lordcapulet.functions import aiida_propose_occ_matrices_from_results
 
 # load node
 
 # wc = load_node(48099)
-wc = load_node(59516) # UO2 
-
-list_node = wc.outputs.all_occupation_matrices
-pk_list = list_node.get_list()
+# wc = load_node(59516) # UO2 
+# wc = load_node(61435) # UO2 afm scan
+wc = load_node(61709) # UO2 constrained scan
+# list_node = wc.outputs.all_occupation_matrices
+# pk_list = list_node.get_list()
+list_node = load_node(62311).get_list() # UO2 constrained scan
 
 
 aiida_list_proposals = aiida_propose_occ_matrices_from_results(
     pk_list = list_node,  
-    N=5,
+    N=60,
     debug=True,
     mode='random',
     tm_atoms=tm_atoms,

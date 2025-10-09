@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 """
 Simple example: Extract calculations from a workchain and save to JSON.
 
@@ -62,5 +63,5 @@ def extract_workchain_to_json(workchain_pk, output_file=None):
 # data = extract_workchain_to_json(49395)
 # data = extract_workchain_to_json(24930, output_file = "CoO_scan_data.json")
 # data = extract_workchain_to_json(19232, output_file = "FeO_scan_data.json")
-data = extract_workchain_to_json(59855, output_file = "UO2_scan_data.json")
+data = extract_workchain_to_json(64716, output_file = "UO2_scan_data.json")
 # %%
