@@ -113,8 +113,8 @@ oscdft_card = Dict(dict={
 })
 
 # Global search parameters
-Nmax = 500   # Total number of constrained calculations to perform
-N = 60      # Number of proposals per generation
+Nmax = 100   # Total number of constrained calculations to perform
+N = 50      # Number of proposals per generation
 
 json_readfile = '/home/carta_a/Documents/Local_calculations/aiida-LordCapulet/examples/NiO_mixing_lTF_beta0.3_oscdft_data.json'
 # Set up the inputs dictionary
@@ -144,7 +144,7 @@ inputs = {
     'N': Int(N),
     
     # Proposal function parameters
-    'proposal_mode': Str('random'),  # Use read mode to load from JSON file
+    'proposal_mode': Str('random_so_n'), 
     'proposal_debug': Bool(True),
     'proposal_holistic': Bool(False),  # Use Markovian approach by default
     

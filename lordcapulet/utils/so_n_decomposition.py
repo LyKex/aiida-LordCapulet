@@ -94,7 +94,7 @@ def euler_angles_to_rotation(euler_angles, generators, reflection=False):
     return R
 
 
-def rotation_to_euler_angles(R, generators, check_orthogonal=True):
+def rotation_to_euler_angles(R, generators, check_orthogonal=True, regularization_applied=None, suppress_warnings=False):
     """Extract Euler angles from an orthogonal matrix using matrix logarithm.
     
     Handles both SO(N) and O(N) matrices. For O(N) matrices with det = -1,
@@ -106,9 +106,10 @@ def rotation_to_euler_angles(R, generators, check_orthogonal=True):
         check_orthogonal (bool): Whether to check if R is orthogonal.
     
     Returns:
-        tuple: (euler_angles, has_reflection)
+        tuple: (euler_angles, has_reflection, need_regularization)
             - euler_angles (numpy.ndarray): The extracted Euler angles.
             - has_reflection (bool): True if the matrix has det = -1 (requires reflection).
+            - need_regularization (bool): True if eigenvalues close to -1 detected (branch cut issue).
     
     Raises:
         ValueError: If check_orthogonal is True and R is not orthogonal.
@@ -126,8 +127,13 @@ def rotation_to_euler_angles(R, generators, check_orthogonal=True):
     det_R = np.linalg.det(R)
     has_reflection = False
     
-    # Handle O(N) matrices with det = -1
-    if np.allclose(det_R, -1.0):
+    # Check if determinant is close to ±1 (more robust approach)
+    abs_det = np.abs(det_R)
+    if not np.allclose(abs_det, 1.0, atol=1e-10):
+        raise ValueError(f"Matrix determinant is {det_R:.6f} (|det|={abs_det:.6f}), expected ±1 for orthogonal matrix")
+    
+    # Determine sign and handle reflection
+    if det_R < 0:  # Negative determinant - reflection case
         if norb % 2 == 0:
             raise ValueError("For even N, reflection decomposition using -I is not valid. "
                            "Use a more general reflection matrix.")
@@ -135,21 +141,24 @@ def rotation_to_euler_angles(R, generators, check_orthogonal=True):
         # Decompose R = -I * R_rotation, so R_rotation = -R
         R_rotation = -R
         has_reflection = True
-    elif np.allclose(det_R, 1.0):
-        # Standard SO(N) case
+    else:  # Positive determinant - standard rotation case
         R_rotation = R
         has_reflection = False
-    else:
-        raise ValueError(f"Matrix determinant is {det_R:.6f}, expected ±1 for orthogonal matrix")
+    
+    # Check for eigenvalues close to -1 (branch cut issue)
+    rotation_eigenvals = np.linalg.eigvals(R_rotation)
+    close_to_minus_one = np.abs(rotation_eigenvals + 1.0) < 1e-10
+    need_regularization = np.any(close_to_minus_one)
+    
+    if need_regularization:
+        print(f"WARNING - rotation_to_euler_angles:\n")
+        print(f"Found eigenvalues close to -1: {rotation_eigenvals[close_to_minus_one]}")
     
     # Compute the matrix logarithm of the rotation part
     A = logm(R_rotation)
     
-    # Make sure A is real (logm can sometimes return complex with tiny imaginary parts)
-    if np.allclose(A.imag, 0):
-        A = A.real
-    else:
-        raise ValueError("Matrix logarithm has significant imaginary components")
+    # Always use real part for angle extraction
+    A = A.real
     
     # Extract angles by projecting onto the basis
     euler_angles = []
@@ -160,7 +169,7 @@ def rotation_to_euler_angles(R, generators, check_orthogonal=True):
         angle = np.sum(A * gen) / 2.0
         euler_angles.append(angle)
     
-    return np.array(euler_angles), has_reflection
+    return np.array(euler_angles), has_reflection, need_regularization
 
 
 def canonicalize_angles(tentative_angles, generators):
@@ -288,9 +297,9 @@ def decompose_rho_and_fix_gauge(rho, generators, tol=1e-3):
             gauge_fixed_eigenvectors[:, group] = Q
     
     # Step 4: Extract canonical angles from the gauge-fixed eigenvectors
-    canonical_angles, has_reflection = rotation_to_euler_angles(gauge_fixed_eigenvectors, generators)
+    canonical_angles, has_reflection, need_regularization = rotation_to_euler_angles(gauge_fixed_eigenvectors, generators)
     
-    return eigenvalues, gauge_fixed_eigenvectors, canonical_angles, has_reflection, degenerate_groups
+    return eigenvalues, gauge_fixed_eigenvectors, canonical_angles, has_reflection, need_regularization, degenerate_groups
 
 # Example usage:
 # 

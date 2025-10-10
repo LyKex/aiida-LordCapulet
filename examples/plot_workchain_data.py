@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 # json_file = "workchain_24930_data.json"  # Replace with your JSON file
 # material_name = "Material_24930"          # Replace with your material name
 # material = "FeO"
-material_name = "UO2"
+material_name = "FeO"
 
 json_file = f"{material_name}_scan_data.json"  # Replace with your JSON file
 output_dir = "."                          # Directory to save plots and CSV

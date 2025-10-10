@@ -22,12 +22,20 @@ Usage:
 
 import json
 import warnings
+import numpy as np
 from typing import Dict, Any, List, Union, Tuple
 from pathlib import Path
 from datetime import datetime
 from aiida.orm import load_node, CalcJobNode, WorkChainNode
 from aiida.common.exceptions import NotExistent
 from aiida.plugins import CalculationFactory
+
+# SO(N) decomposition utilities (imported only when needed)
+from lordcapulet.utils.so_n_decomposition import (
+    get_so_n_lie_basis,
+    rotation_to_euler_angles,
+    decompose_rho_and_fix_gauge
+)
 
 # Try to import alive_progress for progress bar
 try:
@@ -152,12 +160,179 @@ def _determine_calculation_source(calc_node: CalcJobNode) -> str:
     return 'unknown'
 
 
-def extract_calculation_data(calc_node: CalcJobNode) -> Dict[str, Any]:
+def perform_so_n_decomposition(occupation_matrices: Dict[str, Any], debug: bool = False, sanity_check_reconstruct_rho: bool = False) -> Dict[str, Any]:
+    """
+    Perform SO(N) decomposition on occupation matrices to extract eigenvalues, 
+    Euler angles, and reflection information.
+    
+    Args:
+        occupation_matrices: Dictionary containing occupation matrices from AiiDA output
+        debug: Whether to print debug information
+        sanity_check_reconstruct_rho: Whether to include reconstructed density matrix and reconstruction error
+        
+    Returns:
+        dict: Dictionary containing SO(N) decomposition results with keys:
+              - atom_decompositions: Dict with atom keys containing:
+                - up_spin: {eigenvalues, euler_angles, has_reflection}
+                - down_spin: {eigenvalues, euler_angles, has_reflection}
+              - decomposition_successful: bool indicating if decomposition was successful
+              - error_message: str with error details if decomposition failed
+    """
+    decomposition_results = {
+        'atom_decompositions': {},
+        'decomposition_successful': False,
+        'error_message': None
+    }
+    
+    try:
+        if not occupation_matrices or not isinstance(occupation_matrices, dict):
+            decomposition_results['error_message'] = "No valid occupation matrices found"
+            return decomposition_results
+        
+        # Process each atom
+        for atom_key, atom_data in occupation_matrices.items():
+            if not isinstance(atom_data, dict) or 'spin_data' not in atom_data:
+                continue
+            
+            atom_decomp = {}
+            spin_data = atom_data['spin_data']
+            
+            # Process up and down spin channels
+            for spin in ['up', 'down']:
+                if spin not in spin_data or 'occupation_matrix' not in spin_data[spin]:
+                    continue
+                
+                try:
+                    # Get the occupation matrix
+                    occ_matrix = np.array(spin_data[spin]['occupation_matrix'])
+                    
+                    # Check if matrix is square
+                    if occ_matrix.shape[0] != occ_matrix.shape[1]:
+                        if debug:
+                            print(f"Skipping non-square matrix for atom {atom_key}, spin {spin}")
+                        continue
+                    
+                    dim = occ_matrix.shape[0]
+                    
+                    # Generate SO(N) basis
+                    generators = get_so_n_lie_basis(dim)
+                    
+                    # Diagonalize to get eigenvalues and eigenvectors
+                    eigenvalues, eigenvectors = np.linalg.eigh(occ_matrix)
+                    
+                    # Check if eigenvectors form an orthogonal matrix
+                    if not np.allclose(eigenvectors @ eigenvectors.T, np.eye(dim), atol=1e-10):
+                        if debug:
+                            print(f"Warning: eigenvectors not orthogonal for atom {atom_key}, spin {spin}")
+                    
+                    # Extract Euler angles and reflection information
+                    euler_angles, has_reflection, need_regularization = rotation_to_euler_angles(
+                        eigenvectors, generators, check_orthogonal=True
+                    )
+                    
+                    # Handle regularization if needed
+                    regularization_applied = False
+                    if need_regularization:
+                        if debug:
+                            print(f"Regularization needed for atom {atom_key}, {spin} spin - applying 1e-7 to density matrix")
+                        
+                        # Apply regularization to density matrix and try again
+                        regularized_occ_matrix = occ_matrix + 1e-7
+                        eigenvalues_reg, eigenvectors_reg = np.linalg.eigh(regularized_occ_matrix)
+                        
+                        # Try SO(N) decomposition again with regularized matrix
+                        euler_angles_reg, has_reflection_reg, need_regularization_reg = rotation_to_euler_angles(
+                            eigenvectors_reg, generators, check_orthogonal=False
+                        )
+                        
+                        if not need_regularization_reg:
+                            # Regularization worked - use regularized results
+                            eigenvalues = eigenvalues_reg
+                            eigenvectors = eigenvectors_reg
+                            euler_angles = euler_angles_reg
+                            has_reflection = has_reflection_reg
+                            regularization_applied = True
+                            if debug:
+                                print(f"Regularization successful for atom {atom_key}, {spin} spin")
+                        else:
+                            # Regularization didn't help - use original results but flag the issue
+                            regularization_applied = False
+                            if debug:
+                                print(f"Regularization failed for atom {atom_key}, {spin} spin - using original results")
+                    
+                    # Store results
+                    result_data = {
+                        'eigenvalues': eigenvalues.tolist(),
+                        'euler_angles': euler_angles.tolist(),
+                        'has_reflection': bool(has_reflection),
+                        'matrix_dimension': dim,
+                        'trace': float(np.trace(occ_matrix)),
+                        'need_regularization': bool(need_regularization),
+                        'regularization_applied': bool(regularization_applied)
+                    }
+                    
+                    # Add sanity check reconstruction if requested
+                    if sanity_check_reconstruct_rho:
+                        from lordcapulet.utils.so_n_decomposition import euler_angles_to_rotation
+                        
+                        # Reconstruct the rotation matrix from Euler angles
+                        R_reconstructed = euler_angles_to_rotation(euler_angles, generators, reflection=has_reflection)
+                        
+                        # Reconstruct the density matrix: rho = R * diag(eigenvals) * R^T
+                        rho_reconstructed = R_reconstructed @ np.diag(eigenvalues) @ R_reconstructed.T
+                        
+                        # Calculate reconstruction error
+                        reconstruction_error = float(np.max(np.abs(rho_reconstructed - occ_matrix)))
+                        
+                        # Add to results
+                        result_data['sanity_check'] = {
+                            'reconstructed_density_matrix': rho_reconstructed.tolist(),
+                            'reconstruction_error': reconstruction_error
+                        }
+                        
+                        if debug:
+                            print(f"  Reconstruction error: {reconstruction_error:.2e}")
+                    
+                    atom_decomp[f'{spin}_spin'] = result_data
+                    
+                    if debug:
+                        print(f"SO(N) decomposition successful for atom {atom_key}, {spin} spin:")
+                        print(f"  Eigenvalues: {eigenvalues}")
+                        print(f"  Has reflection: {has_reflection}")
+                        print(f"  Matrix trace: {np.trace(occ_matrix):.6f}")
+                
+                except Exception as e:
+                    if debug:
+                        print(f"SO(N) decomposition failed for atom {atom_key}, {spin} spin: {e}")
+                    atom_decomp[f'{spin}_spin'] = {
+                        'error': str(e),
+                        'decomposition_failed': True
+                    }
+        
+            if atom_decomp:
+                decomposition_results['atom_decompositions'][atom_key] = atom_decomp
+        
+        # Mark as successful if we processed at least one atom
+        if decomposition_results['atom_decompositions']:
+            decomposition_results['decomposition_successful'] = True
+        else:
+            decomposition_results['error_message'] = "No atoms could be processed"
+    
+    except Exception as e:
+        decomposition_results['error_message'] = f"General SO(N) decomposition error: {str(e)}"
+        if debug:
+            print(f"SO(N) decomposition error: {e}")
+    
+    return decomposition_results
+
+
+def extract_calculation_data(calc_node: CalcJobNode, perform_so_n: bool = False, sanity_check_reconstruct_rho: bool = False) -> Dict[str, Any]:
     """
     Extract relevant data from a converged PW/ConstrainedPW calculation.
     
     Args:
         calc_node: AiiDA calculation node
+        perform_so_n: Whether to perform SO(N) decomposition on occupation matrices
         
     Returns:
         dict: Dictionary containing extracted data with keys:
@@ -168,6 +343,7 @@ def extract_calculation_data(calc_node: CalcJobNode) -> Dict[str, Any]:
               - output_atomic_occupations: Atomic occupations if available
               - process_type: Type of the calculation process
               - calculation_source: Tag indicating if from AFM workchain or constrained scan
+              - so_n_decomposition: SO(N) analysis results (if perform_so_n=True)
     """
     try:
         data = {
@@ -237,6 +413,22 @@ def extract_calculation_data(calc_node: CalcJobNode) -> Dict[str, Any]:
                 }
     except Exception as e:
         data['output_atomic_occupations'] = f"Error extracting output_atomic_occupations: {str(e)}"
+    
+    # Perform SO(N) decomposition if requested and occupation matrices are available
+    if perform_so_n and data['output_atomic_occupations'] and isinstance(data['output_atomic_occupations'], dict):
+        try:
+            so_n_results = perform_so_n_decomposition(data['output_atomic_occupations'], sanity_check_reconstruct_rho=sanity_check_reconstruct_rho)
+            data['so_n_decomposition'] = so_n_results
+        except Exception as e:
+            data['so_n_decomposition'] = {
+                'decomposition_successful': False,
+                'error_message': f"SO(N) decomposition failed: {str(e)}"
+            }
+    elif perform_so_n:
+        data['so_n_decomposition'] = {
+            'decomposition_successful': False,
+            'error_message': "No valid occupation matrices available for SO(N) decomposition"
+        }
     
     return data
 
@@ -483,13 +675,14 @@ def discover_all_pw_calculations_for_stats(node, visited: set = None, depth: int
     return total_calcs, converged_calcs, exit_status_counts, calc_type_counts, source_counts, non_converged_details
 
 
-def process_calculations(calculation_list: List[Tuple[int, int, str, str]], debug: bool = False) -> List[Dict[str, Any]]:
+def process_calculations(calculation_list: List[Tuple[int, int, str, str]], debug: bool = False, perform_so_n: bool = False, sanity_check_reconstruct_rho: bool = False) -> List[Dict[str, Any]]:
     """
     Process a list of converged calculations and extract data.
     
     Args:
         calculation_list: List of tuples (pk, exit_status, process_type, source) - all should be converged
         debug: If True, print detailed processing information
+        perform_so_n: If True, perform SO(N) decomposition on occupation matrices
         
     Returns:
         list: List of calculation data dictionaries
@@ -501,7 +694,7 @@ def process_calculations(calculation_list: List[Tuple[int, int, str, str]], debu
             for pk, exit_status, process_type, source in calculation_list:
                 try:
                     calc_node = load_node(pk)
-                    calc_data = extract_calculation_data(calc_node)
+                    calc_data = extract_calculation_data(calc_node, perform_so_n=perform_so_n, sanity_check_reconstruct_rho=sanity_check_reconstruct_rho)
                     if calc_data is not None:
                         results.append(calc_data)
                         
@@ -522,7 +715,7 @@ def process_calculations(calculation_list: List[Tuple[int, int, str, str]], debu
         for i, (pk, exit_status, process_type, source) in enumerate(calculation_list):
             try:
                 calc_node = load_node(pk)
-                calc_data = extract_calculation_data(calc_node)
+                calc_data = extract_calculation_data(calc_node, perform_so_n=perform_so_n, sanity_check_reconstruct_rho=sanity_check_reconstruct_rho)
                 if calc_data is not None:
                     results.append(calc_data)
                 else:
@@ -539,7 +732,7 @@ def process_calculations(calculation_list: List[Tuple[int, int, str, str]], debu
                     print(f"Error processing calculation PK {pk}: {str(e)}")
     
     return results
-def gather_workchain_data(workchain_pk: int = None, group_name: str = None, output_filename: str = None, max_results: int = None, debug: bool = False) -> Dict[str, Any]:
+def gather_workchain_data(workchain_pk: int = None, group_name: str = None, output_filename: str = None, max_results: int = None, debug: bool = False, perform_so_n: bool = False, sanity_check_reconstruct_rho: bool = False) -> Dict[str, Any]:
     """
     Main function to gather data from workchains with intelligent workchain type detection.
     
@@ -554,6 +747,8 @@ def gather_workchain_data(workchain_pk: int = None, group_name: str = None, outp
         output_filename: Name of the output JSON file (optional)
         max_results: Maximum number of global workchains to process (optional)
         debug: If True, print detailed information (default: False)
+        perform_so_n: If True, perform SO(N) decomposition on occupation matrices (default: False)
+        sanity_check_reconstruct_rho: If True, include reconstructed density matrix and error for sanity checking (default: False)
         
     Returns:
         dict: Complete data dictionary containing all extracted information
@@ -618,8 +813,11 @@ def gather_workchain_data(workchain_pk: int = None, group_name: str = None, outp
         print(f"Found {len(converged_calculation_list)} converged calculations")
         
         # Process the converged calculations and extract data
-        print("Phase 2: Processing converged calculations and extracting data...")
-        calculations_data = process_calculations(converged_calculation_list, debug=debug)
+        if perform_so_n:
+            print("Phase 2: Processing converged calculations and extracting data (with SO(N) decomposition)...")
+        else:
+            print("Phase 2: Processing converged calculations and extracting data...")
+        calculations_data = process_calculations(converged_calculation_list, debug=debug, perform_so_n=perform_so_n, sanity_check_reconstruct_rho=sanity_check_reconstruct_rho)
         
         # Build statistics from the converged calculations
         source_counts = {}
@@ -775,11 +973,13 @@ if __name__ == "__main__":
                        help="Print detailed traversal information")
     parser.add_argument("--filter-source", choices=['afm_workchain', 'constrained_scan', 'unknown'],
                        help="Filter calculations by source type")
+    parser.add_argument("--so-n", action="store_true",
+                       help="Perform SO(N) decomposition on occupation matrices")
     
     args = parser.parse_args()
     
     try:
-        data = gather_workchain_data(args.pk, args.output, debug=args.debug)
+        data = gather_workchain_data(args.pk, args.output, debug=args.debug, perform_so_n=args.so_n)
         
         # If filtering requested, create filtered file
         if args.filter_source:

@@ -8,7 +8,7 @@ from aiida.engine import WorkChain, run
 from aiida.orm import Dict, List, Int, Float, Str
 from aiida.engine import calcfunction
 
-from .proposal_modes import propose_random_constraints
+from .proposal_modes import propose_random_constraints, propose_random_so_n_constraints
 
 
 def redirect_print_report(func, *args, **kwargs):
@@ -153,6 +153,9 @@ def propose_new_constraints(occ_matr_list, N, mode='random', debug=True, **kwarg
 
         case 'random':
             proposals = propose_random_constraints(occ_matr_list, natoms,  N, debug=debug, **kwargs)
+
+        case 'random_so_n':
+            proposals = propose_random_so_n_constraints(occ_matr_list, natoms, N, debug=debug, **kwargs)
 
         case 'read':
             # check if there is readfile in kwargs

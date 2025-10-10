@@ -1,0 +1,127 @@
+"""
+Random SO(N) mode for generating occupation matrix proposals.
+
+This module implements SO(N) decomposition-based generation of occupation matrices 
+for DFT+U calculations using random Euler angles in the Lie algebra basis.
+"""
+
+import numpy as np
+from typing import List, Dict, Any
+
+from lordcapulet.utils.so_n_decomposition import (
+    get_so_n_lie_basis, 
+    euler_angles_to_rotation,
+    canonicalize_angles
+)
+from .random_mode import _calculate_average_traces, _create_random_diagonal_matrices
+
+
+def propose_random_so_n_constraints(occ_matr_list, natoms, N, debug=False, **kwargs) -> List[Dict[str, Any]]:
+    """
+    Generate N random occupation matrix proposals using SO(N) decomposition.
+    
+    Strategy:
+    1. Calculate target electron counts (traces) from existing data or kwargs (reuses random_mode logic)
+    2. For each proposal:
+       - For each atom: create diagonal matrices with 1s and 0s for occupied/unoccupied states
+       - Generate random Euler angles in the SO(norb) Lie algebra
+       - Apply SO(N) rotation to the diagonal matrices using matrix exponential
+    
+    This maintains consistency with the original random mode by using the same
+    1s/0s diagonal matrix generation and electron count logic.
+    
+    :param occ_matr_list: List of existing occupation matrix dictionaries for reference
+    :param natoms: Number of atoms in the system
+    :param N: Number of proposals to generate
+    :param debug: Whether to print debug information
+    :param kwargs: Additional parameters:
+        - 'target_traces': List of target electron counts per atom (if not provided, calculated from data)
+        - 'randomize_oxidation': Whether to add random variation to electron counts (default: True)
+    
+    Note: Always uses full angle range [-π, π] with canonicalization enabled for optimal coverage.
+    
+    :return: List of N dictionaries containing the SO(N)-generated occupation matrices
+    """
+    
+    if debug:
+        print(f"Generating {N} SO(N)-based occupation matrices for {natoms} atoms")
+    
+    proposals = []
+
+    # STEP 1: Determine target electron counts (traces) for each atom
+    if 'target_traces' not in kwargs:
+        # Calculate average traces from existing occupation matrices (reuse from random_mode)
+        average_traces = _calculate_average_traces(occ_matr_list, natoms, debug)
+    else:
+        average_traces = np.array(kwargs['target_traces'])
+
+    # Get additional parameters
+    randomize_oxidation = kwargs.get('randomize_oxidation', True)
+
+    if debug:
+        print(f"Target electron counts per atom: {average_traces}")
+        print(f"Using full angle range: [-π, π] with canonicalization")
+        print(f"Randomize oxidation: {randomize_oxidation}")
+
+    # STEP 2: Get matrix dimensions and generate SO(N) basis
+    dim = len(occ_matr_list[0]['1']['spin_data']['up']['occupation_matrix'])
+    generators = get_so_n_lie_basis(dim)
+    
+    if debug:
+        print(f"Orbital dimension: {dim}, SO({dim}) has {len(generators)} generators")
+
+    # STEP 3: Generate N random proposals
+    for iteration in range(N):
+        if debug:
+            print(f"  Generating SO(N) proposal {iteration + 1}/{N}")
+        
+        # Create occupation matrices for all atoms
+        occ_mat_list_per_atom = []
+        
+        for iatom in range(natoms):
+            if debug:
+                print(f"    Atom {iatom+1}: dim = {dim}x{dim}")
+            
+            # STEP 3a: Determine target electron count for this atom (reuse from random_mode)
+            target_oxidation = int(round(average_traces[iatom]))
+            if randomize_oxidation:
+                # Add small random variation (-1, 0, or +1)
+                target_oxidation += np.random.randint(-1, 2)
+            
+            if debug:
+                print(f"      Target electrons = {target_oxidation}")
+            
+            # STEP 3b: Create random diagonal matrices with 1s and 0s (reuse from random_mode)
+            target_matrix_np = _create_random_diagonal_matrices(dim, target_oxidation)
+            
+            # STEP 3c: Generate random Euler angles
+            euler_angles = np.random.uniform(-np.pi, np.pi, len(generators))
+            
+            # STEP 3d: Always canonicalize angles to principal branch
+            euler_angles = canonicalize_angles(euler_angles, generators)
+            
+            # STEP 3e: Apply SO(N) rotation to both spin channels
+            rotated_matrices = np.zeros_like(target_matrix_np)
+            for ispin in range(2):  # up and down
+                # Generate rotation matrix from Euler angles
+                R = euler_angles_to_rotation(euler_angles, generators)
+                
+                # Apply rotation: R * diagonal_matrix * R^T
+                rotated_matrices[ispin] = R @ target_matrix_np[ispin] @ R.T
+            
+            if debug:
+                print(f"      Applied SO({dim}) rotation with {len(euler_angles)} parameters")
+            
+            # For collinear calculations, matrices should be real
+            occ_mat_list_per_atom.append(rotated_matrices.real.tolist())
+
+        # Create proposal dictionary
+        proposal = {'matrix': occ_mat_list_per_atom}
+        proposals.append(proposal)
+    
+    if debug:
+        print(f"Successfully generated {len(proposals)} SO(N)-based proposals")
+    
+    return proposals
+
+

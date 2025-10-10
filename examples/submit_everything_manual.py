@@ -156,9 +156,9 @@ list_node = load_node(62311).get_list() # UO2 constrained scan
 
 aiida_list_proposals = aiida_propose_occ_matrices_from_results(
     pk_list = list_node,  
-    N=60,
+    N=4,
     debug=True,
-    mode='random',
+    mode='random_so_n',
     tm_atoms=tm_atoms,
     # mode='read',
     # readfile=Str('NiO_mixing_lTF_beta0.3_oscdft_data.json')
