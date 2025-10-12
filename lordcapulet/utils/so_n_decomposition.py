@@ -125,25 +125,16 @@ def rotation_to_euler_angles(R, generators, check_orthogonal=True, regularizatio
     
     # Get the determinant
     det_R = np.linalg.det(R)
-    has_reflection = False
+
+    if det_R < 0:
+        raise ValueError("Matrix has det = -1, cannot decompose without reflection handling")
     
     # Check if determinant is close to ±1 (more robust approach)
     abs_det = np.abs(det_R)
     if not np.allclose(abs_det, 1.0, atol=1e-10):
         raise ValueError(f"Matrix determinant is {det_R:.6f} (|det|={abs_det:.6f}), expected ±1 for orthogonal matrix")
     
-    # Determine sign and handle reflection
-    if det_R < 0:  # Negative determinant - reflection case
-        if norb % 2 == 0:
-            raise ValueError("For even N, reflection decomposition using -I is not valid. "
-                           "Use a more general reflection matrix.")
-        # For odd N, we can use -I as the reflection
-        # Decompose R = -I * R_rotation, so R_rotation = -R
-        R_rotation = -R
-        has_reflection = True
-    else:  # Positive determinant - standard rotation case
-        R_rotation = R
-        has_reflection = False
+    R_rotation = R
     
     # Check for eigenvalues close to -1 (branch cut issue)
     rotation_eigenvals = np.linalg.eigvals(R_rotation)
@@ -169,7 +160,7 @@ def rotation_to_euler_angles(R, generators, check_orthogonal=True, regularizatio
         angle = np.sum(A * gen) / 2.0
         euler_angles.append(angle)
     
-    return np.array(euler_angles), has_reflection, need_regularization
+    return np.array(euler_angles), need_regularization
 
 
 def canonicalize_angles(tentative_angles, generators):
@@ -212,7 +203,7 @@ def canonicalize_angles(tentative_angles, generators):
     # The result is the unique, canonical representation for that rotation.
     return canonical_angles
 
-def check_degenerate_eigenvalues(eigenvalues, tol=1e-3):
+def check_degenerate_eigenvalues(eigenvalues, tol=1e-6):
     """
     Check for degenerate eigenvalues and group them into sets.
     
@@ -240,7 +231,7 @@ def check_degenerate_eigenvalues(eigenvalues, tol=1e-3):
     
     return degenerate_groups
 
-def decompose_rho_and_fix_gauge(rho, generators, tol=1e-3):
+def decompose_rho_and_fix_gauge(rho, generators, deg_eig_tol=1e-6):
     """
     Decomposes a density matrix into its eigenvalues and eigenvectors,
     and fixes the gauge of the eigenvectors in the case there are degenerate eigenvalues
@@ -274,15 +265,35 @@ def decompose_rho_and_fix_gauge(rho, generators, tol=1e-3):
     eigenvalues, eigenvectors = np.linalg.eigh(rho)
 
     # Step 2: Check for degenerate eigenvalues 
-    degenerate_groups = check_degenerate_eigenvalues(eigenvalues, tol=tol)
+    degenerate_groups = check_degenerate_eigenvalues(eigenvalues, tol=deg_eig_tol)
 
     # Step 3: Fix the gauge of the eigenvectors in each degenerate subspace
     gauge_fixed_eigenvectors = eigenvectors.copy()
     
+
+    # handling of degenerate eigenvalues
     for group in degenerate_groups:
         if len(group) > 1:
             # Extract the subspace of degenerate eigenvectors
             subspace = eigenvectors[:, group]
+
+            # this does not work, but should sketch how to approach this...
+
+            # project to [1,0,0,...] to fix one degree of freedom
+            # and sub the projection with the first eigenvector
+            # if the projection gives the 0 vector, project
+            # to [0,1,0,...], and so on
+            # this fixes the first vector and the QR decomposition
+            # will fix the rest in the orthogonal complement
+            # for i in range(subspace.shape[1]):
+            #     proj = np.zeros(subspace.shape[0])
+            #     proj[i] = 1.0
+            #     dot = np.dot(subspace.T, proj)
+            #     if np.linalg.norm(dot) > 1e-6:
+            #         newvec =  subspace @ dot
+            #         subspace[:,0] = newvec / np.linalg.norm(newvec)
+            #         break
+                    
             
             # Apply QR decomposition to fix the gauge
             Q, R = qr(subspace, mode='economic')
@@ -296,10 +307,34 @@ def decompose_rho_and_fix_gauge(rho, generators, tol=1e-3):
             # Replace the degenerate eigenvectors with the gauge-fixed ones
             gauge_fixed_eigenvectors[:, group] = Q
     
-    # Step 4: Extract canonical angles from the gauge-fixed eigenvectors
-    canonical_angles, has_reflection, need_regularization = rotation_to_euler_angles(gauge_fixed_eigenvectors, generators)
+
+    # handling of sign ambiguities in the definition of the R matrix
+    # Any sign flip to any of the eigenvector
+    # is a valid orthogonal matrix for the decomposition,
+    # we fix this freedom by requiring that for the first
+    # N-1 eigenvectors, it's biggest component determines
+    # univocally its sign, while the N-th eigenvector's sign
+    # is there to ensue that the matrix lies in SO(N), instead 
+    # of the set of improper (det=-1) rotations
+
+    for ivector in range(gauge_fixed_eigenvectors.shape[1]-1):
+        vector = gauge_fixed_eigenvectors[:, ivector]
+        max_comp = np.argmax(np.abs(vector))
+        # print(f"{max_comp=}")
+        if np.sign(vector[max_comp]) < 0:
+            vector *= -1
     
-    return eigenvalues, gauge_fixed_eigenvectors, canonical_angles, has_reflection, need_regularization, degenerate_groups
+    # now the last vector sign depends on the overall determinant
+    temporary_det = np.linalg.det(gauge_fixed_eigenvectors)
+    if temporary_det < 0:
+        gauge_fixed_eigenvectors[:, -1] *= -1
+        
+
+
+    # Step 4: Extract canonical angles from the gauge-fixed eigenvectors
+    canonical_angles, need_regularization = rotation_to_euler_angles(gauge_fixed_eigenvectors, generators, check_orthogonal=False)
+    
+    return eigenvalues, gauge_fixed_eigenvectors, canonical_angles, need_regularization, degenerate_groups
 
 # Example usage:
 # 
@@ -358,42 +393,77 @@ def decompose_rho_and_fix_gauge(rho, generators, tol=1e-3):
 # #%% test density matrices with non-unique eigenvalues
 
 
-# # Example d-orbital density matrix
-# spin_up_density_matrix = np.array([
-# [ 0.575,  0.054,  0.054, -0.0,   0.108],
-# [ 0.054,  0.962,  0.013,  0.094, -0.013],
-# [ 0.054,  0.013,  0.962, -0.094, -0.013],
-# [-0.0,    0.094, -0.094,  0.575, -0.0],
-# [ 0.108, -0.013, -0.013, -0.0,   0.962]
-# ])
+# Example d-orbital density matrix
+spin_up_density_matrix = np.array([
+[ 0.575,  0.054,  0.054, -0.0,   0.108],
+[ 0.054,  0.962,  0.013,  0.094, -0.013],
+[ 0.054,  0.013,  0.962, -0.094, -0.013],
+[-0.0,    0.094, -0.094,  0.575, -0.0],
+[ 0.108, -0.013, -0.013, -0.0,   0.962]
+])
 
-# # Diagonalize to get eigenvectors (orthogonal matrix)
-# eigenvalues, eigenvectors = np.linalg.eigh(spin_up_density_matrix)
-
-# # Test decomposition
-# generators = get_so_n_lie_basis(5)
-# angles, has_reflection = rotation_to_euler_angles(eigenvectors, generators)
+# Diagonalize to get eigenvectors (orthogonal matrix)
+eigenvalues, eigenvectors = np.linalg.eigh(spin_up_density_matrix)
+generators = get_so_n_lie_basis(5)
+eigenvalues, eigenvectors, _,_,deg = decompose_rho_and_fix_gauge(spin_up_density_matrix, generators=generators)
 
 
-# # Test the improved functions
-# degenerate_groups = check_degenerate_eigenvalues(eigenvalues)
-# print(f"Degenerate groups: {degenerate_groups}")
 
-# # Use the complete function
-# eigenvals, gauge_fixed_eigenvecs, canonical_angles, has_reflection = decompose_rho_and_fix_gauge(
-#     spin_up_density_matrix, generators)
+# restore the density matrix
+restored_rho = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
 
-# # Reconstruct the density matrix
-# rho_reconstructed = gauge_fixed_eigenvecs @ np.diag(eigenvals) @ gauge_fixed_eigenvecs.T
+with np.printoptions(precision=3, suppress=True):
+    print("Original density matrix:")
+    print(spin_up_density_matrix)
+    print("Restored density matrix from eigen decomposition:")
+    print(restored_rho)
+    print("Difference (original - restored):")
+    print(spin_up_density_matrix - restored_rho)
 
-# with np.printoptions(precision=3, suppress=True):
-#     print("Original density matrix:")
-#     print(spin_up_density_matrix)
-#     print("Reconstructed density matrix:")
-#     print(rho_reconstructed)
-#     print("Difference (original - reconstructed):")
-#     print(spin_up_density_matrix - rho_reconstructed)
+#%%
+# Test decomposition
+generators = get_so_n_lie_basis(5)
+angles, has_reflection, _ = rotation_to_euler_angles(eigenvectors, generators)
+
+
+# Test the improved functions
+degenerate_groups = check_degenerate_eigenvalues(eigenvalues)
+print(f"Degenerate groups: {degenerate_groups}")
+
+# Use the complete function
+eigenvals, gauge_fixed_eigenvectors, canonical_angles, has_reflection = decompose_rho_and_fix_gauge(
+    spin_up_density_matrix, generators)
+
+# Reconstruct the density matrix
+rho_reconstructed = gauge_fixed_eigenvectors @ np.diag(eigenvals) @ gauge_fixed_eigenvectors.T
+
+with np.printoptions(precision=3, suppress=True):
+    print("Original density matrix:")
+    print(spin_up_density_matrix)
+    print("Reconstructed density matrix:")
+    print(rho_reconstructed)
+    print("Difference (original - reconstructed):")
+    print(spin_up_density_matrix - rho_reconstructed)
 
 
         
+# %%
+uo2_matrix =  np.array([
+    [ 0.051, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0 ],
+    [ 0.0, 0.964, 0.0, 0.0, 0.0, -0.135, 0.0 ],
+    [ 0.0, 0.0, 0.317, 0.0, 0.0, 0.0, 0.425 ],
+    [ 0.002, 0.0, 0.0, 0.04, 0.0, 0.0, 0.0 ],
+    [ 0.0, 0.0, 0.0, 0.0, 0.139, 0.0, 0.0 ],
+    [ 0.0, -0.135, 0.0, 0.0, 0.0, 0.066, 0.0 ],
+    [ 0.0, 0.0, 0.425, 0.0, 0.0, 0.0, 0.709 ]
+])
+
+gen_so7 = get_so_n_lie_basis(7)
+eigenvalues, eigenvectors = np.linalg.eigh(uo2_matrix)
+
+eigenvalues, gauge_fixed_eigenvectors, angles, reg, groups = decompose_rho_and_fix_gauge(eigenvectors, gen_so7)
+
+
+
+
 # %%
