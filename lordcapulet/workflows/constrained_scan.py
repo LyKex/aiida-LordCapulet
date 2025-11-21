@@ -1,8 +1,9 @@
 from aiida.engine import WorkChain, ToContext, submit, append_
-from aiida.orm import load_group, List, Dict, Code, KpointsData, StructureData, Float, Str 
+from aiida.orm import load_group, List, Dict, Code, KpointsData, StructureData, Float, Str, load_node, JsonableData
 from aiida.plugins import CalculationFactory
 import numpy as np
 from aiida_quantumespresso.data.hubbard_structure import HubbardStructureData
+from lordcapulet.utils import extract_occupations_from_calc
 
 # Import the custom constrained calculation
 from lordcapulet.calculations.constrained_pw import ConstrainedPWCalculation
@@ -45,7 +46,8 @@ class ConstrainedScanWorkChain(WorkChain):
         
         # Outputs
         spec.output('all_occupation_matrices', valid_type=List)
-        spec.output('calculation_pks', valid_type=List)
+        spec.output('converged_calculations_pks', valid_type=List)
+        spec.output('all_calculation_pks', valid_type=List)
 
     def prepare_calculations(self):
         """
@@ -70,8 +72,11 @@ class ConstrainedScanWorkChain(WorkChain):
         # pseudo_family = load_group(pseudo_family_string)
         # pseudos = pseudo_family.get_pseudos(structure=self.inputs.structure)
         
-        for i, target_matrix_dict in enumerate(self.ctx.target_matrices):
+        for i, target_matrix_pk in enumerate(self.ctx.target_matrices):
             self.report(f"Submitting calculation {i+1}/{self.ctx.n_calculations}")
+            
+            # Load the target matrix node from PK
+            target_matrix_node = load_node(target_matrix_pk)
             
             # Build the calculation
             builder = ConstrainedPWCalculation.get_builder()
@@ -96,12 +101,8 @@ class ConstrainedScanWorkChain(WorkChain):
             # Set OSCDFT specific inputs
             builder.oscdft_card = self.inputs.oscdft_card
 
-            
-            # Convert the target matrix to the format expected by ConstrainedPWCalculation
-            # target_matrix = target_matrix_dict.get_dict().get('matrix', [])
-            # natoms = len(target_matrix)
-            # target_matrix = [np.array(target_matrix[iatom]) for iatom in range(natoms)]
-            builder.target_matrix = target_matrix_dict
+            # Pass the loaded target matrix node (JsonableData or Dict)
+            builder.target_matrix = target_matrix_node
             
             # Set computational options with configurable walltime
             walltime_hours = self.inputs.walltime_hours.value
@@ -126,26 +127,49 @@ class ConstrainedScanWorkChain(WorkChain):
 
     def gather_results(self):
         """
-        Collect the PKs results from all calculations.
+        Collect the PKs and occupation matrices from all calculations.
         """
-        matrices = []
+        converged_calculations_pks = []
         calculation_pks = []
+        occupation_matrices_pks = []
+        
+        self.report(f"DEBUG: gather_results called with {len(self.ctx.calcs)} calculations")
         
         for i, calc in enumerate(self.ctx.calcs):
             calculation_pks.append(calc.pk)
             
-            if 'output_atomic_occupations' in calc.outputs:
-                # Store the PK of the output occupation matrix
-                pk = calc.outputs.output_atomic_occupations.pk
-                matrices.append(pk)
-                self.report(f"Calculation {i+1} completed successfully with occupation matrix PK: {pk}")
+            # Reload the calculation node to get fresh state
+            fresh_calc = load_node(calc.pk)
+            
+            # Debug information about calculation state (both cached and fresh)
+            self.report(f"DEBUG: Calc {i+1} (PK {calc.pk}):")
+            self.report(f"  Cached: is_finished={calc.is_finished}, exit_status={calc.exit_status}, exit_code={calc.exit_code}")
+            self.report(f"  Fresh:  is_finished={fresh_calc.is_finished}, exit_status={fresh_calc.exit_status}, exit_code={fresh_calc.exit_code}")
+
+            # Use the fresh node for checking status (use exit_status which is always available)
+            if fresh_calc.is_finished and fresh_calc.exit_status == 0:
+                converged_calculations_pks.append(calc.pk)
+                self.report(f"Calculation {i+1} completed successfully, PK: {calc.pk}")
+                
+                # Extract and store occupation matrix using unified structure
+                try:
+                    occupation_data = extract_occupations_from_calc(fresh_calc)
+                    # Store as AiiDA JsonableData node directly
+                    occ_node = JsonableData(occupation_data)
+                    occ_node.store()
+                    occupation_matrices_pks.append(occ_node.pk)
+                    self.report(f"Occupation matrix extracted and stored with PK: {occ_node.pk}")
+                except Exception as e:
+                    self.report(f"Failed to extract occupation matrix from calculation {calc.pk}: {e}")
+            elif fresh_calc.is_finished:
+                self.report(f"Calculation {i+1} finished but failed, PK: {calc.pk}, exit status: {fresh_calc.exit_status}")
             else:
-                # Use -1 as sentinel value for failed calculations
-                # matrices.append(-1)
-                self.report(f"Calculation {i+1} completed but no occupation matrix found")
+                self.report(f"Calculation {i+1} not yet finished, PK: {calc.pk}")
         
         # Store outputs
-        self.out('all_occupation_matrices', List(list=matrices).store())
-        self.out('calculation_pks', List(list=calculation_pks).store())
+        self.out('converged_calculations_pks', List(list=converged_calculations_pks).store())
+        self.out('all_calculation_pks', List(list=calculation_pks).store())
+        self.out('all_occupation_matrices', List(list=occupation_matrices_pks).store())
         
-        self.report(f"Constrained scan completed. {len([m for m in matrices if m != -1])}/{len(matrices)} calculations successful")
+        successful_extractions = len([pk for pk in occupation_matrices_pks if pk != -1])
+        self.report(f"Constrained scan completed. {len(converged_calculations_pks)}/{len(calculation_pks)} calculations converged, {successful_extractions}/{len(calculation_pks)} occupation matrices extracted")

@@ -1,5 +1,5 @@
 from aiida_quantumespresso.calculations.pw import PwCalculation
-from aiida.orm import Dict
+from aiida.orm import Dict, JsonableData
 import numpy as np
 from typing import Any, Dict as TypedDict
 
@@ -25,7 +25,7 @@ class ConstrainedPWCalculation(PwCalculation):
     def define(cls, spec):
         super().define(spec)
         spec.input('oscdft_card', valid_type=Dict, help='Constraint parameters for PW calculation')
-        spec.input('target_matrix', valid_type=Dict, help='Target occupation matrix')
+        spec.input('target_matrix', valid_type=(Dict, JsonableData), help='Target occupation matrix as OccupationMatrixData or legacy Dict')
         # Optionally, mark as not required for backwards compatibility:
         # spec.input('input1', valid_type=Dict, required=False)
         # spec.input('input2', valid_type=Dict, required=False)
@@ -105,15 +105,22 @@ class ConstrainedPWCalculation(PwCalculation):
 
         # Get the input dicts
         oscdft_parameters = self.inputs.oscdft_card.get_dict()
-        target_matrix_dict = self.inputs.target_matrix.get_dict()
         
-        # Convert target matrix dict to numpy array (assuming it's stored as nested lists or similar)
-        # You may need to adjust this conversion based on how the data is structured
-        #target_matrix = np.array(target_matrix_dict.get('matrix', []))
+        # Handle both JsonableData (new) and Dict (legacy) formats
+        if isinstance(self.inputs.target_matrix, JsonableData):
+            # New format: Extract OccupationMatrixData from JsonableData
+            target_matrix_object = self.inputs.target_matrix.obj
+            
+            # Convert unified format to the matrix format needed for OSCDFT
+            target_matrix_dict = target_matrix_object.to_constrained_matrix_format()
+        else:
+            # Legacy format: It's a Dict node
+            target_matrix_dict = self.inputs.target_matrix.get_dict()
+        
+        # Extract the matrix array
         target_matrix = target_matrix_dict.get('matrix', [])
         natoms = len(target_matrix)
-        # transform the list of lists to a list of numpy arrays
-        # for each atom
+        # transform the list of lists to a list of numpy arrays for each atom
         target_matrix = [np.array(target_matrix[iatom]) for iatom in range(natoms)]
 
 

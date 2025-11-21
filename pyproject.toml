@@ -34,6 +34,9 @@ Issues = "https://github.com/alberto-carta/aiida-LordCapulet/issues"
 [project.entry-points."aiida.calculations"]
 "lordcapulet.constrained_pw" = "lordcapulet.calculations.constrained_pw:ConstrainedPWCalculation"
 
+[project.entry-points."aiida.tools.calculations"]
+"lordcapulet.constrained_pw" = "aiida_quantumespresso.tools.calculations.pw:PwCalculationTools"
+
 [project.entry-points."aiida.workflows"]
 "lordcapulet.afm_scan" = "lordcapulet.workflows.afm_scan:AFMScanWorkChain"
 "lordcapulet.constrained_scan" = "lordcapulet.workflows.constrained_scan:ConstrainedScanWorkChain"

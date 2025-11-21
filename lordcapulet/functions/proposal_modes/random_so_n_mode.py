@@ -64,6 +64,7 @@ def propose_random_so_n_constraints(occ_matr_list, natoms, N, debug=False, **kwa
         print(f"Randomize oxidation: {randomize_oxidation}")
 
     # STEP 2: Get matrix dimensions and generate SO(N) basis
+    # this should be done per atom, not at the beginning once
     dim = len(occ_matr_list[0]['1']['spin_data']['up']['occupation_matrix'])
     generators = get_so_n_lie_basis(dim)
     

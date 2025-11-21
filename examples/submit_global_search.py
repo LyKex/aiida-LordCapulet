@@ -6,6 +6,7 @@ from lordcapulet.workflows import GlobalConstrainedSearchWorkChain
 from aiida_quantumespresso.data.hubbard_structure import HubbardStructureData
 from ase.io import read
 
+
 # Load AiiDA profile
 aiida.load_profile()
 
@@ -77,7 +78,7 @@ code = aiida.orm.load_code('pwx_const_debug@daint-debug')  # Adjust to your code
 
 # Set up k-points
 kpoints = KpointsData()
-kpoints.set_kpoints_mesh([8, 8, 8])  # Adjust as needed
+kpoints.set_kpoints_mesh([4, 4, 4])  # Adjust as needed
 
 # Define DFT parameters
 parameters = Dict(dict={
@@ -87,7 +88,7 @@ parameters = Dict(dict={
         'verbosity': 'high',
     },
     'SYSTEM': {
-        'ecutwfc': 80.0,    # Adjust as needed
+        'ecutwfc': 81.0,    # Adjust as needed
         'ecutrho': 640.0,   # Adjust as needed
         'occupations': 'smearing',
         'smearing': 'gaussian',
@@ -113,8 +114,8 @@ oscdft_card = Dict(dict={
 })
 
 # Global search parameters
-Nmax = 100   # Total number of constrained calculations to perform
-N = 50      # Number of proposals per generation
+Nmax = 10   # Total number of constrained calculations to perform
+N = 5      # Number of proposals per generation
 
 json_readfile = '/home/carta_a/Documents/Local_calculations/aiida-LordCapulet/examples/NiO_mixing_lTF_beta0.3_oscdft_data.json'
 # Set up the inputs dictionary
@@ -144,7 +145,7 @@ inputs = {
     'N': Int(N),
     
     # Proposal function parameters
-    'proposal_mode': Str('random_so_n'), 
+    'proposal_mode': Str('random'), 
     'proposal_debug': Bool(True),
     'proposal_holistic': Bool(False),  # Use Markovian approach by default
     
@@ -160,15 +161,16 @@ workchain = submit(GlobalConstrainedSearchWorkChain, **inputs)
 
 print(f"Submitted GlobalConstrainedSearchWorkChain with PK: {workchain.pk}")
 print(f"This will perform up to {Nmax} constrained calculations in batches of {N}")
-print(f"Using 'read' mode with JSON file: {json_readfile}")
+# print(f"Using 'read' mode with JSON file: {json_readfile}")
 print(f"Monitor progress with: verdi process status {workchain.pk}")
 #%% to run after finishing the workchain
-print(f"\nTo analyze results after completion, run:")
+print(f"To analyze results after completion, run:")
 print(f"python -c \"")
 print(f"import aiida; aiida.load_profile()")
 print(f"from aiida.orm import load_node")
 print(f"wc = load_node({workchain.pk})")
-print(f"print('AFM matrices:', len(wc.outputs.all_afm_matrices.get_list()))")
+print(f"print('AFM matrices (OccupationMatrixAiidaData PKs):', len(wc.outputs.all_afm_matrices.get_list()))")
+print(f"print('Constrained matrices (OccupationMatrixAiidaData PKs):', len(wc.outputs.all_constrained_matrices.get_list()))")
 print(f"print('Total calculations:', len(wc.outputs.all_calculation_pks.get_list()))")
 print(f"summary = wc.outputs.generation_summary.get_dict()")
 print(f"for gen_id, gen_data in summary.items():")

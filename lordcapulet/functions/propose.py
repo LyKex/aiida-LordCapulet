@@ -3,12 +3,13 @@ import numpy as np
 import json
 import contextlib
 import io
-from aiida.orm import Dict, Code, KpointsData, load_node
+from aiida.orm import Dict, Code, KpointsData, load_node, JsonableData
 from aiida.engine import WorkChain, run
 from aiida.orm import Dict, List, Int, Float, Str
 from aiida.engine import calcfunction
 
 from .proposal_modes import propose_random_constraints, propose_random_so_n_constraints
+from lordcapulet.utils import OccupationMatrixData, OccupationMatrixAiidaData, extract_occupations_from_calc, filter_atoms_by_species
 
 
 def redirect_print_report(func, *args, **kwargs):
@@ -43,13 +44,39 @@ def aiida_propose_occ_matrices_from_results(
     The print statements will be captured in the AiiDA report log.
     """
 
-    # load the nodes from the PKs
+    # load the nodes from the PKs and convert to unified format
     occ_matrices = []
     for pk in pk_list.get_list():
         node = load_node(pk)
-        if node.__class__.__name__ == "Dict":
-            occupation_matrix = node.get_dict()
-            occ_matrices.append(occupation_matrix)
+        
+        # Handle JsonableData nodes containing OccupationMatrixData (preferred)
+        if hasattr(node, 'obj') and hasattr(node.obj, 'as_dict'):
+            # This is a JsonableData node containing our OccupationMatrixData
+            occupation_matrix_data = node.obj
+            occ_matrices.append(occupation_matrix_data)
+            print(f"Loaded occupation matrix from JsonableData node with PK {pk}")
+        
+        # Legacy support for saved matrix as Dict
+        elif node.__class__.__name__ == "Dict":
+            legacy_dict = node.get_dict()
+            occupation_matrix_data = OccupationMatrixData.from_legacy_dict(legacy_dict)
+            occ_matrices.append(occupation_matrix_data)
+            # print a deprecated warning
+            print(f"Warning: Loaded occupation matrix from Dict node with PK {pk}. This is deprecated, please use OccupationMatrixAiidaData.")
+        
+        # Handle calculation nodes directly (for backward compatibility)
+        elif hasattr(node, 'process_type') and ('aiida.calculations:quantumespresso.pw' in node.process_type or 'aiida.calculations:lordcapulet.constrained_pw' in node.process_type):
+            # try to get the output occupation matrix from the CalcJobNode using unified extractor
+            try:
+                occupation_matrix_data = extract_occupations_from_calc(node)
+                occ_matrices.append(occupation_matrix_data)
+                print(f"Warning: Extracted occupation matrix directly from CalcJobNode with PK {pk}. Consider using workchain outputs instead.")
+            except Exception as e:
+                raise ValueError(f"CalcJobNode with PK {pk}, error in parsing occupation_matrix: {e}")
+        
+        else:
+            raise ValueError(f"Unsupported node type for PK {pk}: {type(node)}. Expected OccupationMatrixAiidaData, Dict, or CalcJobNode.")
+        
 
     # now get the N dictionaries from the list
 
@@ -78,18 +105,36 @@ def aiida_propose_occ_matrices_from_results(
 
 
 
-    # TEMPORARY FIX, remove all atoms in the occ_matrices that are not in tm_atoms
+    # Filter atoms by species if tm_atoms is provided
     if tm_atoms is not None:
-        for i, occ_matrix in enumerate(occ_matrices):
-            # trim all entries that are not f"iatom+1"
-            occ_matrices[i] = { f"{iatom+1}": occ_matrix[f"{iatom+1}"] for iatom in range(len(tm_atoms)) if f"{iatom+1}" in occ_matrix }
-    print(occ_matrices)
+        tm_atoms_list = tm_atoms.get_list() if hasattr(tm_atoms, 'get_list') else tm_atoms
+        filtered_matrices = []
+        for occ_matrix_data in occ_matrices:
+            filtered_data = filter_atoms_by_species(occ_matrix_data, tm_atoms_list)
+            filtered_matrices.append(filtered_data)
+        occ_matrices = filtered_matrices
+
+    # TODO: REFACTOR NEEDED - This is a temporary workaround that loses metadata
+    # Currently converting to legacy format for internal processing, which causes:
+    # 1. Loss of 'specie' and 'shell' information from input occupation matrices
+    # 2. Proposals end up with 'Unknown' specie and 'UNKNOWN' shell
+    # 
+    # SOLUTION: Refactor propose_new_constraints() and proposal_modes to work directly
+    # with OccupationMatrixData instead of legacy dict format. This will preserve
+    # all metadata (specie, shell) throughout the proposal generation pipeline.
+    # The proposal functions should accept and return OccupationMatrixData objects.
+    legacy_occ_matrices = []
+    for occ_matrix_data in occ_matrices:
+        legacy_dict = occ_matrix_data.to_legacy_dict()
+        legacy_occ_matrices.append(legacy_dict)
+    
+    print(legacy_occ_matrices)
 
 
     # magic happens here
     proposals, to_report = redirect_print_report(
                                     propose_new_constraints,
-                                    occ_matr_list =occ_matrices,
+                                    occ_matr_list=legacy_occ_matrices,
                                     N=N.value,
                                     debug=debug.value,
                                     mode=mode.value,
@@ -101,14 +146,28 @@ def aiida_propose_occ_matrices_from_results(
     if self is not None:
         self.report(to_report)
 
-    # create Dict nodes for each proposal
+    # TODO: REFACTOR NEEDED - Metadata loss during proposal conversion
+    # Currently proposals only contain matrix data without specie/shell information.
+    # When converting back via from_constrained_matrix_format(), we get:
+    #   - specie = 'Unknown' 
+    #   - shell = 'UNKNOWN'
+    # instead of preserving the original values from input occupation matrices.
+    #
+    # SOLUTION: Pass the original occ_matrices (OccupationMatrixData) along with proposals
+    # to extract and preserve specie/shell metadata when creating output nodes.
+    # Alternative: Refactor propose_new_constraints to work with OccupationMatrixData directly.
     dict_nodes = []
     for proposal in proposals:
-        # if debug:
-            # print(f"Creating Dict node for proposal: {proposal}")
-        dict_node = Dict(dict=proposal)
-        dict_node.store()
-        dict_nodes.append(dict_node)
+        # Convert the proposal dict to OccupationMatrixData format
+        # proposal has format {'matrix': [atom][spin][orbital][orbital]}
+        # Need to convert to our unified format
+        from lordcapulet.utils import OccupationMatrixData
+        occ_data = OccupationMatrixData.from_constrained_matrix_format(proposal)
+        
+        # Store as JsonableData
+        json_node = JsonableData(occ_data)
+        json_node.store()
+        dict_nodes.append(json_node)
 
     # return a list of the PKs of the Dict nodes
     return List(list=[node.pk for node in dict_nodes])

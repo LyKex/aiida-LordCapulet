@@ -108,6 +108,12 @@ class GlobalConstrainedSearchWorkChain(WorkChain):
         Process AFM results and propose initial matrices for constrained calculations.
         """
         if not self.ctx.afm_wc.is_finished_ok:
+            self.report(f"AFM workchain failed with exit status: {self.ctx.afm_wc.exit_status}")
+            return self.exit_codes.ERROR_AFM_SEARCH_FAILED
+            
+        # Check if we have any occupation matrices at all
+        if 'all_occupation_matrices' not in self.ctx.afm_wc.outputs:
+            self.report("AFM workchain completed but no occupation matrices found")
             return self.exit_codes.ERROR_AFM_SEARCH_FAILED
             
         self.report("AFM search completed successfully, processing results")
@@ -115,6 +121,13 @@ class GlobalConstrainedSearchWorkChain(WorkChain):
         # Get AFM occupation matrices
         afm_matrices = self.ctx.afm_wc.outputs.all_occupation_matrices
         self.ctx.all_afm_matrices = afm_matrices
+        
+        # Check if we have any successful AFM results
+        if len(afm_matrices.get_list()) == 0:
+            self.report("No successful AFM calculations found")
+            return self.exit_codes.ERROR_AFM_SEARCH_FAILED
+        
+        self.report(f"Found {len(afm_matrices.get_list())} successful AFM occupation matrices")
         
         # Initialize counters and storage
         self.ctx.N_cumulative = 0
@@ -159,11 +172,8 @@ class GlobalConstrainedSearchWorkChain(WorkChain):
             **proposal_kwargs
         )
         
-        # Load the actual dictionaries for the next constrained scan
-        self.ctx.current_proposals = [
-            load_node(pk).get_dict() 
-            for pk in proposed_matrices_pks.get_list()
-        ]
+        # Store PKs of the proposal nodes for the next constrained scan
+        self.ctx.current_proposals = proposed_matrices_pks.get_list()
 
     def should_continue_search(self):
         """
@@ -206,26 +216,30 @@ class GlobalConstrainedSearchWorkChain(WorkChain):
         
         # Get results
         constrained_matrices = self.ctx.constrained_wc.outputs.all_occupation_matrices
-        calculation_pks = self.ctx.constrained_wc.outputs.calculation_pks
+        calculation_pks = self.ctx.constrained_wc.outputs.all_calculation_pks
+        converged_calculations = self.ctx.constrained_wc.outputs.converged_calculations_pks
         
-        # Count successful calculations (matrices with PK != -1)
-        successful_matrices = [pk for pk in constrained_matrices.get_list() if pk != -1]
-        failed_count = len([pk for pk in constrained_matrices.get_list() if pk == -1])
+        # Count successful calculations using converged_calculations list
+        successful_matrices = constrained_matrices.get_list()
+        n_successful = len(successful_matrices)
+        n_total = len(calculation_pks.get_list())
+        failed_count = n_total - n_successful
         
-        if len(successful_matrices) == 0:
-            self.report(f"All {len(calculation_pks.get_list())} calculations in generation {self.ctx.generation} failed")
+        if n_successful == 0:
+            self.report(f"All {n_total} calculations in generation {self.ctx.generation} failed")
             return self.exit_codes.ERROR_CONSTRAINED_SCAN_FAILED
         elif failed_count > 0:
-            self.report(f"Generation {self.ctx.generation}: {len(successful_matrices)} successful, {failed_count} failed calculations")
+            self.report(f"Generation {self.ctx.generation}: {n_successful} successful, {failed_count} failed calculations")
         
         # Store results
         self.ctx.generation_results[self.ctx.generation] = {
             'type': 'constrained',
-            'n_calculations': len(calculation_pks.get_list()),
-            'n_successful': len(successful_matrices),
+            'n_calculations': n_total,
+            'n_successful': n_successful,
             'n_failed': failed_count,
             'matrix_pks': constrained_matrices.get_list(),
-            'calculation_pks': calculation_pks.get_list()
+            'calculation_pks': calculation_pks.get_list(),
+            'converged_calculation_pks': converged_calculations.get_list()
         }
         
         # Update cumulative storage
@@ -234,7 +248,7 @@ class GlobalConstrainedSearchWorkChain(WorkChain):
         self.ctx.all_calculation_pks.extend(calculation_pks.get_list())
         
         self.report(f"Generation {self.ctx.generation} completed: "
-                   f"{len(successful_matrices)}/{len(calculation_pks.get_list())} successful calculations")
+                   f"{n_successful}/{n_total} successful calculations")
         
         # If we haven't reached Nmax, propose new matrices for next iteration
         if self.ctx.N_cumulative + len(calculation_pks.get_list()) < self.inputs.Nmax.value:
@@ -263,7 +277,7 @@ class GlobalConstrainedSearchWorkChain(WorkChain):
             else:
                 # Use only successful matrices from current generation (Markovian)
                 matrices_for_proposal = List(list=successful_matrices)
-                self.report(f"Using Markovian approach: analyzing {len(successful_matrices)} matrices from current generation")
+                self.report(f"Using Markovian approach: analyzing {n_successful} matrices from current generation")
             
             proposed_matrices_pks = aiida_propose_occ_matrices_from_results(
                 pk_list=matrices_for_proposal,
@@ -274,11 +288,8 @@ class GlobalConstrainedSearchWorkChain(WorkChain):
                 **proposal_kwargs
             )
             
-            # Load the actual dictionaries for the next constrained scan
-            self.ctx.current_proposals = [
-                load_node(pk).get_dict() 
-                for pk in proposed_matrices_pks.get_list()
-            ]
+            # Store PKs of the proposal nodes for the next constrained scan
+            self.ctx.current_proposals = proposed_matrices_pks.get_list()
 
     def update_counters(self):
         """

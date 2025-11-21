@@ -132,7 +132,7 @@ inputs = {
 from lordcapulet.workflows import AFMScanWorkChain
 from aiida.engine import submit
 
-# wc = submit(AFMScanWorkChain, **inputs)
+wc = submit(AFMScanWorkChain, **inputs)
 
 #print the workchain PK
 # print(f"Submitted AFMScanWorkChain with PK = {wc.pk}")
@@ -143,20 +143,25 @@ from aiida.engine import submit
 from aiida.orm import load_node
 from lordcapulet.functions import aiida_propose_occ_matrices_from_results
 
-# load node
+# Load workchain node
+# Note: With the updated workchains, wc.outputs.all_occupation_matrices now contains
+# PKs of OccupationMatrixAiidaData nodes (not calculation PKs)
 
 # wc = load_node(48099)
 # wc = load_node(59516) # UO2 
 # wc = load_node(61435) # UO2 afm scan
-wc = load_node(61709) # UO2 constrained scan
-# list_node = wc.outputs.all_occupation_matrices
+wc = load_node(74003) # UO2 constrained scan
+list_node = wc.outputs.all_occupation_matrices
 # pk_list = list_node.get_list()
-list_node = load_node(62311).get_list() # UO2 constrained scan
+# list_node = load_node(62311).get_list() # UO2 constrained scan
 
-
+# The aiida_propose_occ_matrices_from_results function can now handle:
+# - OccupationMatrixAiidaData nodes (new format)
+# - Dict nodes (legacy format) 
+# - Calculation nodes (direct extraction)
 aiida_list_proposals = aiida_propose_occ_matrices_from_results(
-    pk_list = list_node,  
-    N=4,
+    pk_list = list_node.get_list(),  
+    N=60,
     debug=True,
     mode='random_so_n',
     tm_atoms=tm_atoms,
@@ -164,11 +169,13 @@ aiida_list_proposals = aiida_propose_occ_matrices_from_results(
     # readfile=Str('NiO_mixing_lTF_beta0.3_oscdft_data.json')
 )
 
-print(f"Created Dict nodes with PKs: " + str(aiida_list_proposals.get_list()))
+print(f"Created proposal Dict nodes with PKs: " + str(aiida_list_proposals.get_list()))
 #%%
-# load the first node and look at the matrix
+# Load the first proposal node and examine the matrix
+# Note: aiida_propose_occ_matrices_from_results still returns Dict nodes
+# containing matrices in the format expected by ConstrainedScanWorkChain
 first_node = load_node(aiida_list_proposals[0])
-print(f"Loaded node with PK: {first_node.pk}")
+print(f"Loaded proposal node with PK: {first_node.pk}")
 matrix = first_node.get_dict()['matrix']
 
 with np.printoptions(precision=3, suppress=True):
@@ -212,17 +219,17 @@ with np.printoptions(precision=3, suppress=True):
 
 
 #%%
-# check by loading the first node
+# Check another proposal by loading a different node
 first_node = load_node(aiida_list_proposals[3])
 
 with np.printoptions(precision=3, suppress=True):
-
-    print("Stored occupation matrix in AiiDA Dict node:")
+    print("Stored occupation matrix in proposal Dict node:")
     print(np.array(first_node.get_dict()['matrix']))
 #%%
 from lordcapulet.workflows import ConstrainedScanWorkChain
 
-
+# Convert proposal Dict nodes to the format expected by ConstrainedScanWorkChain
+# The proposals are already in the correct {'matrix': [...]} format
 target_list = [ load_node(pk).get_dict() for pk in aiida_list_proposals.get_list()]
 code = aiida.orm.load_code('pwx_const_debug@daint-debug')
 
@@ -264,7 +271,7 @@ aiida_list_proposals = aiida_propose_occ_matrices_from_results(
     readfile=Str('NiO_mixing_lTF_beta0.3_oscdft_data.json')
 )
 
-print(f"Created Dict nodes with PKs: " + str(aiida_list_proposals.get_list()))
+print(f"Created proposal Dict nodes with PKs: " + str(aiida_list_proposals.get_list()))
 # %%
 
 
