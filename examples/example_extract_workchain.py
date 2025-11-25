@@ -1,9 +1,11 @@
 #%%
 import json
 import aiida
-from lordcapulet.utils.postprocessing.gather_workchain_data import WorkchainExtractor
+from lordcapulet.utils.postprocessing.gather_workchain_data import WorkchainDataExtractor
 # aiida profile load
 aiida.load_profile()
+
+
 #%%
 
 # workchain_pk = 19232 # FeO
@@ -16,14 +18,16 @@ aiida.load_profile()
 # workchain_pk = 59855 # UO2
 
 # workchain_pk = 64716 # UO2
-material_name = "UO2"
-workchain_pk = 74786 # UO2 second run with so(n) enabled
+# material_name = "UO2"
+material_name = "trial"
+# workchain_pk = 74786 # UO2 second run with so(n) enabled
+workchain_pk =  95201# UO2 second run with so(n) enabled
 afm_chain = 64717
-feo_so_n_global_chain = 49395
+# feo_so_n_global_chain = 49395
 # Create extractor with SO(N) decomposition enabled
-extractor = WorkchainExtractor(perform_so_n=True,
-                            sanity_check_reconstruct_rho=True,
-                            debug=False)
+extractor = WorkchainDataExtractor(perform_so_n=True,
+                            sanity_check_reconstruct=True,
+                            debug=True)
 
 # Extract data from workchain
 data = extractor.extract_from_workchain(workchain_pk)
