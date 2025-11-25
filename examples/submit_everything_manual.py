@@ -13,7 +13,7 @@ from aiida.orm import List
 aiida.load_profile()
 #%%
 
-atoms = read('NiO.scf.in', format='espresso-in')
+atoms = read('FeO.scf.in', format='espresso-in')
 # atoms = read('nbcl.relax.in', format='espresso-in')
 
 def tag_and_list_atoms(atoms):
@@ -132,16 +132,16 @@ inputs = {
 from lordcapulet.workflows import AFMScanWorkChain
 from aiida.engine import submit
 
-wc = submit(AFMScanWorkChain, **inputs)
+# wc = submit(AFMScanWorkChain, **inputs)
 
 #print the workchain PK
 # print(f"Submitted AFMScanWorkChain with PK = {wc.pk}")
 
 
 #%%
- 
 from aiida.orm import load_node
 from lordcapulet.functions import aiida_propose_occ_matrices_from_results
+
 
 # Load workchain node
 # Note: With the updated workchains, wc.outputs.all_occupation_matrices now contains
@@ -150,7 +150,7 @@ from lordcapulet.functions import aiida_propose_occ_matrices_from_results
 # wc = load_node(48099)
 # wc = load_node(59516) # UO2 
 # wc = load_node(61435) # UO2 afm scan
-wc = load_node(74003) # UO2 constrained scan
+wc = load_node(94286) # UO2 constrained scan
 list_node = wc.outputs.all_occupation_matrices
 # pk_list = list_node.get_list()
 # list_node = load_node(62311).get_list() # UO2 constrained scan
@@ -161,76 +161,48 @@ list_node = wc.outputs.all_occupation_matrices
 # - Calculation nodes (direct extraction)
 aiida_list_proposals = aiida_propose_occ_matrices_from_results(
     pk_list = list_node.get_list(),  
-    N=60,
+    N=6,
     debug=True,
     mode='random_so_n',
     tm_atoms=tm_atoms,
+    reporter_type='print',
     # mode='read',
     # readfile=Str('NiO_mixing_lTF_beta0.3_oscdft_data.json')
 )
 
-print(f"Created proposal Dict nodes with PKs: " + str(aiida_list_proposals.get_list()))
+print(f"Created proposal nodes with PKs: " + str(aiida_list_proposals.get_list()))
 #%%
 # Load the first proposal node and examine the matrix
 # Note: aiida_propose_occ_matrices_from_results still returns Dict nodes
 # containing matrices in the format expected by ConstrainedScanWorkChain
-first_node = load_node(aiida_list_proposals[0])
+first_node = load_node(aiida_list_proposals[4])
 print(f"Loaded proposal node with PK: {first_node.pk}")
-matrix = first_node.get_dict()['matrix']
+
+matrices = first_node.obj.data
+
 
 with np.printoptions(precision=3, suppress=True):
     print("Proposed occupation matrix:")
     # first matrix is up, second is down
-    print(np.array(matrix[0]).real)
-    print(np.array(matrix[1]).real)
-    # print sum of traces over up and down
-    trace_up = np.trace(np.array(matrix[0][0]))
-    trace_down = np.trace(np.array(matrix[0][1]))
-    print(f"Trace up: {trace_up}, Trace down: {trace_down}")
-    print(f"Total trace: {trace_up + trace_down}")
+    for atom_idx, matrix in matrices.items():
+        print(f"Atom index: {atom_idx}")
+        print('Spin up:')
+        print(np.array(matrix['occupation_matrix']['up']).real)
+        print('Spin down:')
+        print(np.array(matrix['occupation_matrix']['down']).real)
+        # print sum of traces over up and down
+        trace_up = np.trace(np.array(matrix['occupation_matrix']['up']))
+        trace_down = np.trace(np.array(matrix['occupation_matrix']['down']))
+        print(f"Trace up: {trace_up}, Trace down: {trace_down}")
+        print(f"Total trace: {trace_up + trace_down}")
     
-# print(np.array(first_node.get_dict()['matrix']))
-# #%% check randomization manually
-# from importlib import reload
-# from lordcapulet.utils.rotation_matrices import rotate_QE_matrix, spherical_to_cubic_rotation
-# from lordcapulet.functions.proposal_modes.random_mode import _apply_random_rotation, propose_random_constraints, _calculate_average_traces
 
-# # wc = load_node(48099)
-# wc = load_node(59516) # UO2 
-
-# list_node = wc.outputs.all_occupation_matrices
-# pk_list = list_node.get_list()
-
-# occ_matrices = []
-# for pk in pk_list:
-#     node = load_node(pk)
-#     if node.__class__.__name__ == "Dict":
-#         occupation_matrix = node.get_dict()
-#         occ_matrices.append(occupation_matrix)
-
-# average_traces = _calculate_average_traces(occ_matrices, natoms=2)
-
-# rot_matrix = spherical_to_cubic_rotation(dim=7, convention='qe')
-
-# identity  = rot_matrix @ rot_matrix.T.conj()
-
-# proposed = propose_random_constraints(occ_matrices, natoms=2,  N=1, debug=True, target_traces=[5, 5], randomize_oxidation=False)
-
-
-
-#%%
-# Check another proposal by loading a different node
-first_node = load_node(aiida_list_proposals[3])
-
-with np.printoptions(precision=3, suppress=True):
-    print("Stored occupation matrix in proposal Dict node:")
-    print(np.array(first_node.get_dict()['matrix']))
 #%%
 from lordcapulet.workflows import ConstrainedScanWorkChain
 
 # Convert proposal Dict nodes to the format expected by ConstrainedScanWorkChain
 # The proposals are already in the correct {'matrix': [...]} format
-target_list = [ load_node(pk).get_dict() for pk in aiida_list_proposals.get_list()]
+target_list = [ load_node(pk).obj for pk in aiida_list_proposals.get_list()]
 code = aiida.orm.load_code('pwx_const_debug@daint-debug')
 
 
@@ -275,7 +247,8 @@ print(f"Created proposal Dict nodes with PKs: " + str(aiida_list_proposals.get_l
 # %%
 
 
-target_list = [ load_node(pk).get_dict() for pk in aiida_list_proposals.get_list()]
+# target_list = [ pk for pk in aiida_list_proposals.get_list()]
+target_list = aiida_list_proposals.get_list()
 code = aiida.orm.load_code('pwx_const_debug@daint-debug')
 
 

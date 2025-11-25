@@ -13,10 +13,11 @@ from lordcapulet.utils.so_n_decomposition import (
     euler_angles_to_rotation,
     canonicalize_angles
 )
+from lordcapulet.utils import OccupationMatrixData
 from .random_mode import _calculate_average_traces, _create_random_diagonal_matrices
 
 
-def propose_random_so_n_constraints(occ_matr_list, natoms, N, debug=False, **kwargs) -> List[Dict[str, Any]]:
+def propose_random_so_n_constraints(occ_matr_list, natoms, N, debug=False, **kwargs) -> List[OccupationMatrixData]:
     """
     Generate N random occupation matrix proposals using SO(N) decomposition.
     
@@ -26,11 +27,12 @@ def propose_random_so_n_constraints(occ_matr_list, natoms, N, debug=False, **kwa
        - For each atom: create diagonal matrices with 1s and 0s for occupied/unoccupied states
        - Generate random Euler angles in the SO(norb) Lie algebra
        - Apply SO(N) rotation to the diagonal matrices using matrix exponential
+       - Preserve specie and shell metadata from input matrices
     
     This maintains consistency with the original random mode by using the same
     1s/0s diagonal matrix generation and electron count logic.
     
-    :param occ_matr_list: List of existing occupation matrix dictionaries for reference
+    :param occ_matr_list: List of OccupationMatrixData objects for reference
     :param natoms: Number of atoms in the system
     :param N: Number of proposals to generate
     :param debug: Whether to print debug information
@@ -40,13 +42,19 @@ def propose_random_so_n_constraints(occ_matr_list, natoms, N, debug=False, **kwa
     
     Note: Always uses full angle range [-π, π] with canonicalization enabled for optimal coverage.
     
-    :return: List of N dictionaries containing the SO(N)-generated occupation matrices
+    :return: List of N OccupationMatrixData objects (proposals)
     """
     
     if debug:
         print(f"Generating {N} SO(N)-based occupation matrices for {natoms} atoms")
     
     proposals = []
+
+    # Extract metadata from first reference matrix for reuse
+    first_occ_data = occ_matr_list[0]
+    atom_labels = first_occ_data.get_atom_labels()
+    atom_species = {label: first_occ_data[label]['specie'] for label in atom_labels}
+    atom_shells = {label: first_occ_data[label]['shell'] for label in atom_labels}
 
     # STEP 1: Determine target electron counts (traces) for each atom
     if 'target_traces' not in kwargs:
@@ -64,8 +72,7 @@ def propose_random_so_n_constraints(occ_matr_list, natoms, N, debug=False, **kwa
         print(f"Randomize oxidation: {randomize_oxidation}")
 
     # STEP 2: Get matrix dimensions and generate SO(N) basis
-    # this should be done per atom, not at the beginning once
-    dim = len(occ_matr_list[0]['1']['spin_data']['up']['occupation_matrix'])
+    dim = len(first_occ_data.get_occupation_matrix(atom_labels[0], 'up'))
     generators = get_so_n_lie_basis(dim)
     
     if debug:
@@ -76,12 +83,12 @@ def propose_random_so_n_constraints(occ_matr_list, natoms, N, debug=False, **kwa
         if debug:
             print(f"  Generating SO(N) proposal {iteration + 1}/{N}")
         
-        # Create occupation matrices for all atoms
-        occ_mat_list_per_atom = []
+        # Create new OccupationMatrixData for this proposal
+        proposal_data = {}
         
-        for iatom in range(natoms):
+        for iatom, atom_label in enumerate(atom_labels):
             if debug:
-                print(f"    Atom {iatom+1}: dim = {dim}x{dim}")
+                print(f"    {atom_label}: dim = {dim}x{dim}")
             
             # STEP 3a: Determine target electron count for this atom (reuse from random_mode)
             target_oxidation = int(round(average_traces[iatom]))
@@ -114,10 +121,18 @@ def propose_random_so_n_constraints(occ_matr_list, natoms, N, debug=False, **kwa
                 print(f"      Applied SO({dim}) rotation with {len(euler_angles)} parameters")
             
             # For collinear calculations, matrices should be real
-            occ_mat_list_per_atom.append(rotated_matrices.real.tolist())
+            # Store in unified format with preserved metadata
+            proposal_data[atom_label] = {
+                'specie': atom_species[atom_label],
+                'shell': atom_shells[atom_label],
+                'occupation_matrix': {
+                    'up': rotated_matrices[0].real.tolist(),
+                    'down': rotated_matrices[1].real.tolist()
+                }
+            }
 
-        # Create proposal dictionary
-        proposal = {'matrix': occ_mat_list_per_atom}
+        # Create OccupationMatrixData from proposal
+        proposal = OccupationMatrixData(proposal_data)
         proposals.append(proposal)
     
     if debug:

@@ -137,6 +137,11 @@ class AFMScanWorkChain(WorkChain):
                     occ_node = JsonableData(occupation_data)
                     occ_node.store()
                     occupation_matrices_pks.append(occ_node.pk)
+                    
+                    # Add occupation matrix pk to the extras of each calculation
+                    fresh_calc.base.extras.set('occupation_matrix_pk', occ_node.pk)
+
+                    
                     self.report(f"Occupation matrix extracted and stored with PK: {occ_node.pk}")
                 except Exception as e:
                     self.report(f"Failed to extract occupation matrix from calculation {calc.pk}: {e}")

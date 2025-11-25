@@ -7,7 +7,11 @@ This directory contains the test suite for the LordCapulet AiiDA plugin.
 ```
 tests/
 ├── __init__.py                     # Test package initialization
-├── conftest.py                     # Pytest configuration 
+├── conftest.py                     # Pytest configuration
+├── test_occupation_matrix.py       # Tests for OccupationMatrixData
+├── test_proposal_modes.py          # Tests for proposal generation (random, random_so_n)
+├── test_so_n_decomposition.py      # Tests for SO(N) decomposition utilities
+├── test_so_n_integration.py        # Integration tests for SO(N) decomposition
 └── utils/                          # Tests for utility functions
     ├── __init__.py                 # Utils test package init
     └── test_rotation_matrices.py   # Tests for rotation matrix utilities
@@ -48,6 +52,73 @@ python pytest_runner.py
 ```
 
 ## Test Coverage
+
+### Occupation Matrix Data (`tests/test_occupation_matrix.py`)
+
+Tests for the unified `OccupationMatrixData` structure:
+
+- ✅ Initialization (empty and with data)
+- ✅ Conversion from AiiDA-QE format (`from_aiida_qe_occupations`)
+- ✅ Conversion from legacy format (`from_legacy_dict`)
+- ✅ Conversion from constrained matrix format (`from_constrained_matrix_format`)
+- ✅ Conversion to constrained matrix format (`to_constrained_matrix_format`)
+- ✅ Conversion to legacy format (`to_legacy_dict`)
+- ✅ Getter methods (`get_atom_labels`, `get_atom_species`, `get_occupation_matrix`)
+- ✅ Round-trip conversions (AiiDA-QE, legacy, constrained)
+- ✅ JSON serializability
+- ✅ Realistic 5x5 d-orbital matrices
+- ✅ 1D array reshaping (flattened matrices)
+- ✅ Numpy array to list conversion
+
+### Proposal Modes (`tests/test_proposal_modes.py`)
+
+Tests for proposal generation functions:
+
+#### Metadata Preservation
+- ✅ Random mode preserves specie and shell metadata
+- ✅ Random SO(N) mode preserves specie and shell metadata
+
+#### Random Mode (`propose_random_constraints`)
+- ✅ Basic functionality
+- ✅ Matrix properties (dimensions, hermiticity, real values)
+- ✅ Target traces parameter
+- ✅ Multiple atoms support
+- ✅ Randomness verification
+
+#### Random SO(N) Mode (`propose_random_so_n_constraints`)
+- ✅ Basic functionality
+- ✅ SO(N) matrix properties
+- ✅ Target traces parameter
+- ✅ Multiple atoms support
+- ✅ Randomness verification
+
+#### Consistency Between Modes
+- ✅ Same output structure
+- ✅ Atom count preservation
+
+### SO(N) Decomposition (`tests/test_so_n_decomposition.py`)
+
+Tests for SO(N) and O(N) matrix decomposition:
+
+- ✅ Lie basis dimension
+- ✅ SO(N) round-trip (angles → matrix → angles)
+- ✅ O(N) reflection case (det = -1)
+- ✅ Even dimension reflection error handling
+- ✅ Invalid matrix error handling
+- ✅ Angle/generator mismatch error handling
+- ✅ Quantum Espresso example (realistic d-orbital)
+- ✅ Basis orthogonality properties
+- ✅ Angle canonicalization
+- ✅ Canonicalization with long paths
+- ✅ Canonicalization idempotency
+
+### SO(N) Integration (`tests/test_so_n_integration.py`)
+
+Integration tests that can run without pytest:
+
+- ✅ Basic functionality test
+- ✅ Angle canonicalization
+- ✅ Quantum Espresso example with density matrix reconstruction
 
 ### Rotation Matrices (`tests/utils/test_rotation_matrices.py`)
 
@@ -109,8 +180,11 @@ if __name__ == "__main__":
 
 Areas that could benefit from additional testing:
 
-- **Calculations**: Tests for `ConstrainedPWCalculation`
+- **Calculations**: Tests for `ConstrainedPWCalculation` (acceptance of JsonableData vs Dict)
 - **Workflows**: Tests for `AFMScanWorkChain`, `ConstrainedScanWorkChain`, `GlobalConstrainedSearchWorkChain`
-- **Functions**: Tests for `aiida_propose_occ_matrices_from_results`
-- **Integration**: End-to-end workflow tests
+- **Functions**: Tests for `aiida_propose_occ_matrices_from_results` (AiiDA calcfunction wrapper)
+- **Proposal Modes**: Tests for 'read' mode (once refactored to use `OccupationMatrixData`)
+- **Integration**: End-to-end workflow tests with AiiDA database
 - **Performance**: Benchmarking for large systems
+- **Backward Compatibility**: Tests ensuring old Dict format still works
+

@@ -21,7 +21,7 @@ def redirect_print_report(func, *args, **kwargs):
 
 @calcfunction
 def aiida_propose_occ_matrices_from_results(
-    pk_list, N=8, debug=False, mode='random', *, self=None, tm_atoms=None, **kwargs):
+    pk_list, N=8, debug=False, mode='random', *, reporter_type=None, tm_atoms=None, **kwargs):
     """
     AiiDA calcfunction that takes a list of PKs
     and returns a list of PKs of Dict nodes that are themselves stored
@@ -43,6 +43,12 @@ def aiida_propose_occ_matrices_from_results(
     This is because it is a calcfunction wrapping AiiDA agnostic code.
     The print statements will be captured in the AiiDA report log.
     """
+
+    if reporter_type == 'print':
+        def reporter(msg):
+            print(msg)
+    else:
+        reporter = None
 
     # load the nodes from the PKs and convert to unified format
     occ_matrices = []
@@ -99,9 +105,9 @@ def aiida_propose_occ_matrices_from_results(
             raise ValueError(f"Unsupported AiiDA node type for key '{key}': {type(value)}. "
                            f"Only Dict, List, Int, Float, and Str nodes are supported.")
     # check if this ran in the debug mode
-    if debug and self is not None:
-        self.report(f"Loaded {len(occ_matrices)} occupation matrices from nodes with PKs: {pk_list.get_list()}")
-        self.report(f"Using proposal mode: {mode.value} with N = {N.value} samples per generation")
+    if debug and reporter is not None:
+        reporter(f"Loaded {len(occ_matrices)} occupation matrices from nodes with PKs: {pk_list.get_list()}")
+        reporter(f"Using proposal mode: {mode.value} with N = {N.value} samples per generation")
 
 
 
@@ -114,27 +120,15 @@ def aiida_propose_occ_matrices_from_results(
             filtered_matrices.append(filtered_data)
         occ_matrices = filtered_matrices
 
-    # TODO: REFACTOR NEEDED - This is a temporary workaround that loses metadata
-    # Currently converting to legacy format for internal processing, which causes:
-    # 1. Loss of 'specie' and 'shell' information from input occupation matrices
-    # 2. Proposals end up with 'Unknown' specie and 'UNKNOWN' shell
-    # 
-    # SOLUTION: Refactor propose_new_constraints() and proposal_modes to work directly
-    # with OccupationMatrixData instead of legacy dict format. This will preserve
-    # all metadata (specie, shell) throughout the proposal generation pipeline.
-    # The proposal functions should accept and return OccupationMatrixData objects.
-    legacy_occ_matrices = []
-    for occ_matrix_data in occ_matrices:
-        legacy_dict = occ_matrix_data.to_legacy_dict()
-        legacy_occ_matrices.append(legacy_dict)
-    
-    print(legacy_occ_matrices)
+    if debug.value:
+        print(f"Loaded {len(occ_matrices)} OccupationMatrixData objects")
+        for i, occ_data in enumerate(occ_matrices):
+            print(f"  Matrix {i+1}: {len(occ_data)} atoms, species: {occ_data.get_atom_species()}")
 
-
-    # magic happens here
+    # Generate proposals using OccupationMatrixData directly (no conversion to legacy format)
     proposals, to_report = redirect_print_report(
                                     propose_new_constraints,
-                                    occ_matr_list=legacy_occ_matrices,
+                                    occ_matr_list=occ_matrices,
                                     N=N.value,
                                     debug=debug.value,
                                     mode=mode.value,
@@ -143,29 +137,15 @@ def aiida_propose_occ_matrices_from_results(
 
     # this does not work as it should, needs refactoring
 
-    if self is not None:
-        self.report(to_report)
+    # if self is not None:
+    #     self.report(to_report)
 
-    # TODO: REFACTOR NEEDED - Metadata loss during proposal conversion
-    # Currently proposals only contain matrix data without specie/shell information.
-    # When converting back via from_constrained_matrix_format(), we get:
-    #   - specie = 'Unknown' 
-    #   - shell = 'UNKNOWN'
-    # instead of preserving the original values from input occupation matrices.
-    #
-    # SOLUTION: Pass the original occ_matrices (OccupationMatrixData) along with proposals
-    # to extract and preserve specie/shell metadata when creating output nodes.
-    # Alternative: Refactor propose_new_constraints to work with OccupationMatrixData directly.
+    # Store proposals as JsonableData nodes
+    # Proposals are already OccupationMatrixData objects with metadata preserved
     dict_nodes = []
     for proposal in proposals:
-        # Convert the proposal dict to OccupationMatrixData format
-        # proposal has format {'matrix': [atom][spin][orbital][orbital]}
-        # Need to convert to our unified format
-        from lordcapulet.utils import OccupationMatrixData
-        occ_data = OccupationMatrixData.from_constrained_matrix_format(proposal)
-        
         # Store as JsonableData
-        json_node = JsonableData(occ_data)
+        json_node = JsonableData(proposal)
         json_node.store()
         dict_nodes.append(json_node)
 
@@ -175,37 +155,33 @@ def aiida_propose_occ_matrices_from_results(
 
 def propose_new_constraints(occ_matr_list, N, mode='random', debug=True, **kwargs):
     """
+    Generate N new occupation matrix proposals from existing data.
+    
     !!IMPORTANT!! THIS FUNCTION SHOULD NOT GET ANY AIIDA TYPES AS INPUT
     
-    Returns a list of N dictionaries from a list of dictionaries.
-    
-    This will be a giant function with a lot of logic
-    and it is better that everything non trivial gets its own function and wrapped here
-
-    
-    :param occ_matr_list: List of dictionaries to choose from.
-    :param N: Number of dictionaries to return.
-    :return: List of N dictionaries.
+    :param occ_matr_list: List of OccupationMatrixData objects to use as reference
+    :param N: Number of proposals to generate
+    :param mode: Proposal generation mode ('random', 'random_so_n', or 'read')
+    :param debug: Whether to print debug information
+    :param kwargs: Additional mode-specific parameters
+    :return: List of N OccupationMatrixData objects (proposals)
     """
-    # make sure that N is > 1
+    if N < 1:
+        raise ValueError("N must be greater than or equal to 1")
+    
+    # Get dimensions from first occupation matrix
+    first_occ_data = occ_matr_list[0]
+    natoms = len(first_occ_data)
+    first_atom_label = first_occ_data.get_atom_labels()[0]
+    norbitals = len(first_occ_data.get_occupation_matrix(first_atom_label, 'up'))
+    nspin = 2  # up and down spin
 
-    atom_names = list(occ_matr_list[1].keys())
-    natoms = len(atom_names)
-    spin_names = ['up', 'down']
-    nspin = 2 # up and down spin
-
-    norbitals = np.array(occ_matr_list[1][atom_names[0]]['spin_data']['up']['occupation_matrix']).shape[0] 
-
-    # structure of an output dictionary
-    # { 'matrix': array of shape (natoms, nspin, norbitals, norbitals) }'
     if debug:
         print(f"Number of atoms: {natoms}")
         print(f"Number of spins: {nspin}")
-        print(f"Number of orbitals for atom 1: {norbitals}")
-
-
-    if N < 1:
-        raise ValueError("N must be greater than or equal to 1")
+        print(f"Number of orbitals: {norbitals}")
+        print(f"Atom labels: {first_occ_data.get_atom_labels()}")
+        print(f"Atom species: {first_occ_data.get_atom_species()}")
 
     # implement case switch for mode
     match mode:

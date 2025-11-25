@@ -60,19 +60,30 @@ class OccupationMatrixData:
         
         Args:
             occupations_list: Output from calc.tools.get_occupations()
-                Format: [{'atom_label': 'Atom_1', 'atom_specie': 'Fe1', 'shell': '3d',
+                Format: [{'atom_label': 1, 'atom_specie': 'Fe1', 'shell': '3d',
                          'occupation_matrix': {'up': array(...), 'down': array(...)}}]
         
         Returns:
             OccupationMatrixData instance
         """
         data = {}
+
+        # conventions in AiiDA-QE keep changing
+        # so here we keep an internal structure
         
         for atom_data in occupations_list:
-            atom_label = atom_data['atom_label']
-            atom_specie = atom_data['atom_specie']
-            shell = atom_data['shell']
-            occ_matrix = atom_data['occupation_matrix']
+            atom_label = atom_data['atom_index']
+            atom_specie = atom_data['kind_name']
+            shell = atom_data['manifold']
+            occ_matrix = atom_data['occupations']
+
+
+            # TODO: Huge red flag that comes from quantum espresso logic
+            # the occupation matrix is always as big as the biggest shell
+            # among the inputs, this means that if i have a d and a p shell
+            # then the p-atom will have also a 5x5 matrix for its p shell
+            # if I have a d and an f shell, the d-atom will have also a 7x7 matrix for its d shell
+            # this needs to be handled explicitly in the future
             
             # Convert numpy arrays to lists for JSON serialization
             up_matrix = occ_matrix['up'].tolist() if hasattr(occ_matrix['up'], 'tolist') else occ_matrix['up']
@@ -117,13 +128,13 @@ class OccupationMatrixData:
             # Handle different legacy formats
             if 'spin_data' in atom_info:
                 # Format: {'1': {'specie': 'Fe', 'spin_data': {'up': {'occupation_matrix': ...}}}}
-                atom_label = f"Atom_{atom_key}"
+                atom_label = atom_key
                 specie = atom_info.get('specie', 'Unknown')
                 up_matrix = atom_info['spin_data']['up']['occupation_matrix']
                 down_matrix = atom_info['spin_data']['down']['occupation_matrix']
             elif 'occupation_matrix' in atom_info:
                 # Format: {'1': {'occupation_matrix': {'up': ..., 'down': ...}}}
-                atom_label = f"Atom_{atom_key}"
+                atom_label = atom_key
                 specie = atom_info.get('specie', 'Unknown')
                 up_matrix = atom_info['occupation_matrix']['up']
                 down_matrix = atom_info['occupation_matrix']['down']
@@ -163,7 +174,7 @@ class OccupationMatrixData:
         matrix = matrix_data['matrix']
         
         for atom_idx, atom_matrix in enumerate(matrix):
-            atom_label = f"Atom_{atom_idx + 1}"
+            atom_label = atom_idx + 1
             specie = atom_species[atom_idx] if atom_species and atom_idx < len(atom_species) else 'Unknown'
             
             up_matrix = atom_matrix[0]  # First spin channel

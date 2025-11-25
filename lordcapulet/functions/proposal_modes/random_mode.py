@@ -9,10 +9,11 @@ import numpy as np
 from typing import List, Dict, Any
 
 from lordcapulet.utils.rotation_matrices import rotate_QE_matrix
+from lordcapulet.utils import OccupationMatrixData
 from scipy.stats import uniform_direction # random direction generator
 
 
-def propose_random_constraints(occ_matr_list, natoms, N, debug=False, randomize_oxidation=True, **kwargs) -> list[dict[str, Any]]:
+def propose_random_constraints(occ_matr_list, natoms, N, debug=False, randomize_oxidation=True, **kwargs) -> List[OccupationMatrixData]:
     """
     Generate N random occupation matrix proposals.
     
@@ -22,8 +23,9 @@ def propose_random_constraints(occ_matr_list, natoms, N, debug=False, randomize_
        - For each atom: create diagonal occupation matrices with target electron count
        - Optionally randomize the electron count slightly
        - Apply random rotations to break symmetry
+       - Preserve specie and shell metadata from input matrices
     
-    :param occ_matr_list: List of existing occupation matrix dictionaries for reference
+    :param occ_matr_list: List of OccupationMatrixData objects for reference
     :param natoms: Number of atoms in the system
     :param N: Number of proposals to generate
     :param debug: Whether to print debug information
@@ -31,13 +33,19 @@ def propose_random_constraints(occ_matr_list, natoms, N, debug=False, randomize_
     :param kwargs: Additional parameters:
         - 'target_traces': List of target electron counts per atom (if not provided, calculated from data)
     
-    :return: List of N dictionaries containing the random occupation matrices
+    :return: List of N OccupationMatrixData objects (proposals)
     """
     
     if debug:
         print(f"Generating {N} random occupation matrices for {natoms} atoms")
     
     proposals = []
+
+    # Extract metadata from first reference matrix for reuse
+    first_occ_data = occ_matr_list[0]
+    atom_labels = first_occ_data.get_atom_labels()
+    atom_species = {label: first_occ_data[label]['specie'] for label in atom_labels}
+    atom_shells = {label: first_occ_data[label]['shell'] for label in atom_labels}
 
     # STEP 1: Determine target electron counts (traces) for each atom
     if 'target_traces' not in kwargs:
@@ -49,18 +57,17 @@ def propose_random_constraints(occ_matr_list, natoms, N, debug=False, randomize_
     if debug:
         print(f"Target electron counts per atom: {average_traces}")
 
-
     # STEP 2: Generate N random proposals
     for iteration in range(N):
         if debug:
             print(f"  Generating proposal {iteration + 1}/{N}")
         
-        # Create occupation matrices for all atoms
-        occ_mat_list_per_atom = []
+        # Create new OccupationMatrixData for this proposal
+        proposal_data = {}
         
-        for iatom in range(natoms):
+        for iatom, atom_label in enumerate(atom_labels):
             # Get matrix dimensions from reference data
-            dim = len(occ_matr_list[0][f'{iatom+1}']['spin_data']['up']['occupation_matrix'])
+            dim = len(first_occ_data.get_occupation_matrix(atom_label, 'up'))
             
             # STEP 2a: Determine target electron count for this atom
             target_oxidation = int(round(average_traces[iatom]))
@@ -69,7 +76,7 @@ def propose_random_constraints(occ_matr_list, natoms, N, debug=False, randomize_
                 target_oxidation += np.random.randint(-1, 2)  # randint is exclusive of upper bound
             
             if debug:
-                print(f"    Atom {iatom+1}: target electrons = {target_oxidation}, matrix size = {dim}x{dim}")
+                print(f"    {atom_label}: target electrons = {target_oxidation}, matrix size = {dim}x{dim}")
             
             # STEP 2b: Create random diagonal occupation matrices
             # This generates a random multiplet configuration
@@ -79,11 +86,19 @@ def propose_random_constraints(occ_matr_list, natoms, N, debug=False, randomize_
             # STEP 2c: Apply random rotation to break symmetry
             target_matrix_np = _apply_random_rotation(target_matrix_np)
             
-            # for collinear calculations, matrices should be real, we enforce this
-            occ_mat_list_per_atom.append(target_matrix_np.real.tolist())
+            # For collinear calculations, matrices should be real
+            # Store in unified format with preserved metadata
+            proposal_data[atom_label] = {
+                'specie': atom_species[atom_label],
+                'shell': atom_shells[atom_label],
+                'occupation_matrix': {
+                    'up': target_matrix_np[0].real.tolist(),
+                    'down': target_matrix_np[1].real.tolist()
+                }
+            }
 
-        # Create proposal dictionary
-        proposal = {'matrix': occ_mat_list_per_atom}
+        # Create OccupationMatrixData from proposal
+        proposal = OccupationMatrixData(proposal_data)
         proposals.append(proposal)
     
     if debug:
@@ -96,18 +111,21 @@ def _calculate_average_traces(occ_matr_list, natoms, debug=False):
     """
     Calculate average electron counts (traces) from existing occupation matrices.
     
-    :param occ_matr_list: List of occupation matrix dictionaries
+    :param occ_matr_list: List of OccupationMatrixData objects
     :param natoms: Number of atoms
     :param debug: Whether to print debug info
     :return: Array of average traces per atom
     """
     average_traces = np.zeros(natoms)
     
-    for iatom in range(natoms):
+    # Get atom labels from first matrix
+    atom_labels = occ_matr_list[0].get_atom_labels()
+    
+    for iatom, atom_label in enumerate(atom_labels):
         total_trace = 0
-        for occ_mat_card in occ_matr_list:
-            up_matrix = occ_mat_card[f'{iatom+1}']['spin_data']['up']['occupation_matrix']
-            down_matrix = occ_mat_card[f'{iatom+1}']['spin_data']['down']['occupation_matrix']
+        for occ_data in occ_matr_list:
+            up_matrix = np.array(occ_data.get_occupation_matrix(atom_label, 'up'))
+            down_matrix = np.array(occ_data.get_occupation_matrix(atom_label, 'down'))
             total_trace += np.trace(up_matrix) + np.trace(down_matrix)
         
         average_traces[iatom] = total_trace / len(occ_matr_list)

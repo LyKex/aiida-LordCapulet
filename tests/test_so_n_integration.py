@@ -37,25 +37,24 @@ def test_basic_functionality():
     print("SO(N) matrix properties verified (^_^)")
     
     # Extract angles
-    extracted_angles, has_reflection = rotation_to_euler_angles(R, generators)
-    assert not has_reflection, "Should not have reflection for SO(N)"
+    extracted_angles, need_regularization = rotation_to_euler_angles(R, generators)
+    print(f"Regularization needed: {need_regularization}")
     
     # Check matrix reconstruction (more important than exact angle matching)
     R_reconstructed = euler_angles_to_rotation(extracted_angles, generators)
     assert np.allclose(R, R_reconstructed, atol=1e-12), "Matrix reconstruction failed"
     print("SO(N) round-trip successful (^_^)")
     
-    # Test 3: O(N) with reflection
+    # Test 3: O(N) with reflection - should raise ValueError
     R_reflection = euler_angles_to_rotation(angles, generators, reflection=True)
     assert np.allclose(np.linalg.det(R_reflection), -1.0), "Reflection matrix det should be -1"
     
-    extracted_refl_angles, has_reflection = rotation_to_euler_angles(R_reflection, generators)
-    assert has_reflection, "Should detect reflection"
-    
-    # Check matrix reconstruction (more important than exact angle matching)
-    R_refl_reconstructed = euler_angles_to_rotation(extracted_refl_angles, generators, reflection=True)
-    assert np.allclose(R_reflection, R_refl_reconstructed, atol=1e-12), "Reflection matrix reconstruction failed"
-    print("O(N) reflection case successful (^_^)")
+    try:
+        rotation_to_euler_angles(R_reflection, generators)
+        assert False, "Should have raised ValueError for det=-1"
+    except ValueError as e:
+        assert "det = -1" in str(e)
+        print("O(N) reflection case correctly raises ValueError (^_^)")
     
     print("All basic tests passed!")
 
@@ -98,32 +97,44 @@ def test_quantum_espresso_example():
     # Diagonalize
     eigenvalues, eigenvectors = np.linalg.eigh(density_matrix)
     print(f"Eigenvalues: {eigenvalues}")
-    print(f"Eigenvector determinant: {np.linalg.det(eigenvectors):.6f}")
+    det_eigenvectors = np.linalg.det(eigenvectors)
+    print(f"Eigenvector determinant: {det_eigenvectors:.6f}")
     
     # Decompose
     generators = get_so_n_lie_basis(5)
-    angles, has_reflection = rotation_to_euler_angles(eigenvectors, generators)
     
-    print(f"Matrix type: {'O(N)' if has_reflection else 'SO(N)'}")
-    print(f"Number of Euler angles extracted: {len(angles)}")
-    
-    # Verify reconstruction
-    eigenvectors_reconstructed = euler_angles_to_rotation(
-        angles, generators, reflection=has_reflection
-    )
-    reconstruction_error = np.max(np.abs(eigenvectors - eigenvectors_reconstructed))
-    print(f"Eigenvector reconstruction error: {reconstruction_error:.2e}")
-    
-    # Full density matrix reconstruction
-    density_reconstructed = (
-        eigenvectors_reconstructed @ np.diag(eigenvalues) @ eigenvectors_reconstructed.T
-    )
-    density_error = np.max(np.abs(density_matrix - density_reconstructed))
-    print(f"Full density matrix reconstruction error: {density_error:.2e}")
-    
-    assert reconstruction_error < 1e-12, "Eigenvector reconstruction failed"
-    assert density_error < 1e-12, "Density matrix reconstruction failed"
-    print("Quantum Espresso example successful (^_^)")
+    if det_eigenvectors < 0:
+        # If det = -1, should raise ValueError
+        print("Determinant is negative, expecting ValueError...")
+        try:
+            rotation_to_euler_angles(eigenvectors, generators)
+            assert False, "Should have raised ValueError for det=-1"
+        except ValueError as e:
+            assert "det = -1" in str(e)
+            print("Quantum Espresso example correctly raises ValueError for det=-1 (^_^)")
+    else:
+        # If det = +1, decomposition should work
+        angles, need_regularization = rotation_to_euler_angles(eigenvectors, generators)
+        
+        print(f"Matrix type: SO(N)")
+        print(f"Number of Euler angles extracted: {len(angles)}")
+        print(f"Regularization needed: {need_regularization}")
+        
+        # Verify reconstruction
+        eigenvectors_reconstructed = euler_angles_to_rotation(angles, generators)
+        reconstruction_error = np.max(np.abs(eigenvectors - eigenvectors_reconstructed))
+        print(f"Eigenvector reconstruction error: {reconstruction_error:.2e}")
+        
+        # Full density matrix reconstruction
+        density_reconstructed = (
+            eigenvectors_reconstructed @ np.diag(eigenvalues) @ eigenvectors_reconstructed.T
+        )
+        density_error = np.max(np.abs(density_matrix - density_reconstructed))
+        print(f"Full density matrix reconstruction error: {density_error:.2e}")
+        
+        assert reconstruction_error < 1e-12, "Eigenvector reconstruction failed"
+        assert density_error < 1e-12, "Density matrix reconstruction failed"
+        print("Quantum Espresso example successful (^_^)")
 
 
 if __name__ == "__main__":
