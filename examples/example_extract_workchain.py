@@ -6,24 +6,12 @@ from lordcapulet.utils.postprocessing.gather_workchain_data import WorkchainData
 aiida.load_profile()
 
 
+
 #%%
-
-# workchain_pk = 19232 # FeO
-# workchain_pk = 24930 # CoO
-# material_name = "CoO"
-# workchain_pk = 25730 # CuO
-# material_name = "CuO"
-# workchain_pk = 36461 # VO
-# material_name = "VO"
-# workchain_pk = 59855 # UO2
-
-# workchain_pk = 64716 # UO2
-# material_name = "UO2"
-material_name = "trial"
+material_name = "NiO"
 # workchain_pk = 74786 # UO2 second run with so(n) enabled
-workchain_pk =  95201# UO2 second run with so(n) enabled
-afm_chain = 64717
-# feo_so_n_global_chain = 49395
+workchain_pk = 96376 # FeO second run with so(n) enabled
+workchain_pk = 101440 # NiO second run with so(n) enabled
 # Create extractor with SO(N) decomposition enabled
 extractor = WorkchainDataExtractor(perform_so_n=True,
                             sanity_check_reconstruct=True,
@@ -33,7 +21,7 @@ extractor = WorkchainDataExtractor(perform_so_n=True,
 data = extractor.extract_from_workchain(workchain_pk)
 
 # Save to JSON
-extractor.save_to_json(data, f"{material_name}_scan_data_extractor_so_n.json")
+extractor.save_to_json(data, f"{material_name}_scan_data_extractor_redone.json")
 # extractor.save_to_json(data, f"{material_name}_scan_data_extractor.json")
 
 # Print summary
