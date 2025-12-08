@@ -3,6 +3,9 @@ import aiida
 from aiida.orm import Code, Dict, StructureData, KpointsData, List, Int, Str, Bool, Float, load_node
 from aiida.engine import submit
 from lordcapulet.workflows import GlobalConstrainedSearchWorkChain
+from lordcapulet.utils.preprocessing.submission import tag_and_list_atoms, get_default_manifolds, get_dimensions
+# import HubbardUtils to rearrange atoms
+from aiida_quantumespresso.utils.hubbard import HubbardUtils
 from aiida_quantumespresso.data.hubbard_structure import HubbardStructureData
 from ase.io import read
 
@@ -11,52 +14,21 @@ from ase.io import read
 aiida.load_profile()
 
 # Load structure (adapt this to your system)
-# atoms = read('NiO.scf.in', format='espresso-in')  # Adjust path as needed
-atoms = read('FeO.scf.in', format='espresso-in')  # Adjust path as needed
-
-def tag_and_list_atoms(atoms):
-    """
-    Tags atoms based on whether they are transition metals or other elements.
-    Transition metals get a unique tag (e.g., Ni1, Mn2).
-    Other elements get a tag based on their element symbol (e.g., O1, S1).
-    These tags are stored in atom.info['custom_tag'].
-
-    Args:
-        atoms (list): A list of atom objects, assumed to be ASE Atom objects
-                      or similar with 'symbol' and an 'info' dictionary attribute.
-    """
-    transition_metals = {
-        'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn',
-        'Y', 'Zr', 'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd',
-        'La', 'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg',
-        'Ac', 'Rf', 'Db', 'Sg', 'Bh', 'Hs', 'Mt', 'Ds', 'Rg', 'Cn'
-    }
-
-    tm_counts = {}
-    other_counts = {}
-    tm_atoms = []
-
-    for atom in atoms:
-
-        if atom.symbol in transition_metals:
-            if atom.symbol not in tm_counts:
-                tm_counts[atom.symbol] = 0
-            
-            tm_counts[atom.symbol] += 1
-            # Store the custom string tag in atom.info
-            atom.tag = tm_counts[atom.symbol]
-            tm_atoms.append(f"{atom.symbol}{tm_counts[atom.symbol]}")
-        else:
-            if atom.symbol not in other_counts:
-                other_counts[atom.symbol] = 1
-            
-            # Store the custom string tag in atom.info
-            atom.tag = other_counts[atom.symbol]
-    
-    return tm_atoms
+atoms = read('NiO.scf.in', format='espresso-in')  # Adjust path as needed
+# atoms = read('FeO.scf.in', format='espresso-in')  # Adjust path as needed
 
 
-tm_atoms = tag_and_list_atoms(atoms)
+tm_atoms = tag_and_list_atoms(atoms, table={'Ni'})
+tm_manifolds = get_default_manifolds(tm_atoms)
+tm_dimensions = get_dimensions(tm_manifolds) 
+
+total_dimensions = sum(tm_dimensions)
+
+# print tags
+print("Tagged transition atoms:", tm_atoms)
+print("Corresponding manifolds:", tm_manifolds)
+print("Corresponding dimensions:", tm_dimensions)
+print("Total dimensions:", total_dimensions)
 
 structure = StructureData(ase=atoms)
 Uval = 5.0  # Example value for Hubbard U
@@ -68,9 +40,10 @@ for itm, tm_atom in enumerate(tm_atoms):
         atom_manifold="3d",
         value=Uval  )  # Example: incrementing
 
-# Convert to HubbardStructureData if needed
-# hubbard_structure = HubbardStructureData.from_structure(structure)
-# Add Hubbard parameters here if needed
+# make sure that the Hubbard atoms are always before the rest of the atoms in the structure
+hutils = HubbardUtils(hubbard_structure)
+hutils.reorder_atoms()
+hubbard_structure = hutils._hubbard_structure
 
 # Load computational resources
 code = aiida.orm.load_code('pwx_const_debug@daint-debug')  # Adjust to your code
@@ -88,7 +61,7 @@ parameters = Dict(dict={
         'verbosity': 'high',
     },
     'SYSTEM': {
-        'ecutwfc': 78.0,    # Adjust as needed
+        'ecutwfc': 80.0,    # Adjust as needed
         'ecutrho': 640.0,   # Adjust as needed
         'occupations': 'smearing',
         'smearing': 'gaussian',
@@ -98,7 +71,7 @@ parameters = Dict(dict={
     },
     'ELECTRONS': {
         'conv_thr': 1.0e-8,
-        'mixing_beta': 0.31,
+        'mixing_beta': 0.30,
         'electron_maxstep': 500,
     },
 })
@@ -106,7 +79,7 @@ parameters = Dict(dict={
 
 oscdft_card = Dict(dict={
     'oscdft_type': 2,
-    'n_oscdft': 100,
+    'n_oscdft': total_dimensions,
     'constraint_strength': 1.0,
     'constraint_conv_thr': 0.005,
     'constraint_maxstep': 200,
@@ -114,8 +87,8 @@ oscdft_card = Dict(dict={
 })
 
 # Global search parameters
-Nmax = 4   # Total number of constrained calculations to perform
-N = 4      # Number of proposals per generation
+Nmax = 20   # Total number of constrained calculations to perform
+N = 10      # Number of proposals per generation
 
 json_readfile = '/home/carta_a/Documents/Local_calculations/aiida-LordCapulet/examples/NiO_mixing_lTF_beta0.3_oscdft_data.json'
 # Set up the inputs dictionary
@@ -128,6 +101,7 @@ inputs = {
         'code': code,
         'tm_atoms': List(list=tm_atoms),
         'magnitude': Float(0.5),  # Magnetization magnitude for AFM
+        'walltime_hours': Float(0.5),  # time for one AFM calculation
     },
     
     # Constrained scan inputs
@@ -138,6 +112,7 @@ inputs = {
         'code': code,
         'tm_atoms': List(list=tm_atoms),
         'oscdft_card': oscdft_card,
+        'walltime_hours': Float(0.5),  # time for one constrained calculation
     },
     
     # Global search parameters
@@ -145,7 +120,7 @@ inputs = {
     'N': Int(N),
     
     # Proposal function parameters
-    'proposal_mode': Str('random'), 
+    'proposal_mode': Str('random_so_n'), 
     'proposal_debug': Bool(True),
     'proposal_holistic': Bool(False),  # Use Markovian approach by default
     
