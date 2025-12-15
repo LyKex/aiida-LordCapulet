@@ -29,7 +29,7 @@ import numpy as np
 from aiida.orm import load_node, CalcJobNode, WorkChainNode, JsonableData
 from aiida.common.exceptions import NotExistent
 
-from lordcapulet.utils.occupation_matrix import OccupationMatrixData
+from lordcapulet.data_structures.occupation_matrix import OccupationMatrixData
 from lordcapulet.utils.so_n_decomposition import (
     get_so_n_lie_basis,
     decompose_rho_and_fix_gauge,

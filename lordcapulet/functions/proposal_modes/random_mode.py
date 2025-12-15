@@ -9,7 +9,7 @@ import numpy as np
 from typing import List, Dict, Any
 
 from lordcapulet.utils.rotation_matrices import rotate_QE_matrix
-from lordcapulet.utils import OccupationMatrixData
+from lordcapulet.data_structures import OccupationMatrixData
 from scipy.stats import uniform_direction # random direction generator
 
 

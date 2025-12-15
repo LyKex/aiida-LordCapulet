@@ -9,7 +9,7 @@ from aiida.orm import Dict, List, Int, Float, Str
 from aiida.engine import calcfunction
 
 from .proposal_modes import propose_random_constraints, propose_random_so_n_constraints
-from lordcapulet.utils import OccupationMatrixData, OccupationMatrixAiidaData, extract_occupations_from_calc, filter_atoms_by_species
+from lordcapulet.data_structures import OccupationMatrixData, OccupationMatrixAiidaData, extract_occupations_from_calc, filter_atoms_by_species
 
 
 def redirect_print_report(func, *args, **kwargs):

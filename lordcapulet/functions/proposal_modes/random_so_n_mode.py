@@ -13,7 +13,7 @@ from lordcapulet.utils.so_n_decomposition import (
     euler_angles_to_rotation,
     canonicalize_angles
 )
-from lordcapulet.utils import OccupationMatrixData
+from lordcapulet.data_structures import OccupationMatrixData
 from .random_mode import _calculate_average_traces, _create_random_diagonal_matrices
 
 

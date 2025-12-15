@@ -6,7 +6,7 @@ Utility modules for LordCapulet.
 # from .structure_utils import tag_and_list_atoms
 # from .magnetism_utils import create_magnetic_configs
 
-from .occupation_matrix import (
+from lordcapulet.data_structures.occupation_matrix import (
     OccupationMatrixData, 
     OccupationMatrixAiidaData,
     extract_occupations_from_calc,

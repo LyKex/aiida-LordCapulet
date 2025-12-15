@@ -8,7 +8,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from lordcapulet.utils.occupation_matrix import OccupationMatrixData
+from lordcapulet.data_structures.occupation_matrix import OccupationMatrixData
 
 
 class TestOccupationMatrixData:
