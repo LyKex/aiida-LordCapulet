@@ -1,0 +1,755 @@
+#!/usr/bin/env python3
+"""
+DataBank: Efficient storage and PyTorch conversion for OccupationMatrixData collections.
+
+This module provides a functional, immutable container for multiple calculations,
+optimized for machine learning workflows with PyTorch.
+"""
+
+import json
+import numpy as np
+from pathlib import Path
+from typing import Dict, List, Any, Tuple, Optional, Union
+from copy import deepcopy
+
+try:
+    import torch
+    HAS_TORCH = True
+except (ImportError, ModuleNotFoundError):
+    HAS_TORCH = False
+    torch = None
+
+from .occupation_matrix import OccupationMatrixData
+
+
+class DataBank:
+    """
+    Immutable container for multiple OccupationMatrixData objects with metadata.
+    
+    Design principles:
+    - Functional: operations return new DataBank instances
+    - Single source of truth: all data in _records list
+    - Lazy computation: flattening cached only when needed
+    - PyTorch-ready: efficient tensor conversion
+    
+    Each record contains:
+        - pk: Calculation primary key
+        - energy: Total energy (eV)
+        - energy_uncertainty: Energy uncertainty (TODO: temporary, currently 0.0)
+        - converged: Boolean convergence status
+        - occ_data: OccupationMatrixData object
+        - metadata: Optional additional fields (hubbard_energy, etc.)
+    """
+    
+    def __init__(self, records: Optional[List[Dict[str, Any]]] = None):
+        """
+        Initialize DataBank with calculation records.
+        
+        Args:
+            records: List of dicts with keys: 'pk', 'energy', 'converged', 'occ_data', 'metadata'
+        """
+        self._records = records if records is not None else []
+        
+        # Cache for flattened data (lazy computed)
+        self._cache = None  # Will be dict when computed
+    
+    # ============================================================================
+    # Factory methods - Loading data
+    # ============================================================================
+    
+    @classmethod
+    def from_json(cls, json_path: Union[str, Path], only_converged: bool = True) -> 'DataBank':
+        """
+        Load DataBank from JSON file (output of gather_workchain_data).
+        
+        Args:
+            json_path: Path to JSON file
+            only_converged: If True, only load converged calculations (default: True)
+            
+        Returns:
+            DataBank instance with loaded calculations
+        """
+        json_path = Path(json_path)
+        
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        
+        records = []
+        calculations = data.get('calculations', {})
+        
+        for pk_str, calc_data in calculations.items():
+            # Extract basic fields
+            pk = int(pk_str)
+            converged = calc_data.get('converged', False)
+            
+            # Skip non-converged if requested
+            if only_converged and not converged:
+                continue
+            
+            # Extract energy
+            output_params = calc_data.get('output_parameters', {})
+            energy = output_params.get('energy', None) if output_params else None
+            if energy is None:
+                energy = output_params.get('energy_eV', None) if output_params else None
+            
+            # Extract occupation matrices
+            occ_matrices = calc_data.get('occupation_matrices')
+            if occ_matrices is None or not isinstance(occ_matrices, dict):
+                continue  # Skip calculations without occupation data
+            
+            # Convert to OccupationMatrixData
+            occ_data = OccupationMatrixData.from_dict(occ_matrices)
+            
+            # Store metadata
+            metadata = {
+                'hubbard_energy': output_params.get('energy_hubbard', None) if output_params else None,
+                'process_type': calc_data.get('process_type'),
+                'source': calc_data.get('calculation_source'),
+            }
+            
+            # TODO: energy_uncertainty is temporary placeholder, should be computed/extracted
+            energy_uncertainty = 0.0
+            
+            records.append({
+                'pk': pk,
+                'energy': energy,
+                'energy_uncertainty': energy_uncertainty,
+                'converged': converged,
+                'occ_data': occ_data,
+                'metadata': metadata
+            })
+        
+        return cls(records)
+    
+    @classmethod
+    def from_workchain(cls, workchain_pk: int, only_converged: bool = True, **kwargs) -> 'DataBank':
+        """
+        Temporary placeholder for loading from workchain PK.
+        """
+        # raise implementation error for now
+        raise NotImplementedError("from_workchain is not yet implemented. Use from_json instead.")
+    
+    @classmethod
+    def from_calculation_pks(cls, calc_pks: List[int]) -> 'DataBank':
+        """
+        Load DataBank from list of calculation PKs (future implementation).
+        
+        Args:
+            calc_pks: List of calculation primary keys
+            
+        Returns:
+            DataBank instance
+        """
+        from aiida.orm import load_node
+        from lordcapulet.data_structures.occupation_matrix import extract_occupations_from_calc
+        
+        records = []
+        
+        for pk in calc_pks:
+            calc = load_node(pk)
+            
+            # Extract energy
+            if 'output_parameters' in calc.outputs:
+                params = calc.outputs.output_parameters.get_dict()
+                energy = params.get('energy', params.get('energy_eV'))
+            else:
+                energy = None
+            
+            # Extract occupation data
+            try:
+                occ_data = extract_occupations_from_calc(calc)
+            except Exception:
+                continue  # Skip if can't extract
+            
+            # TODO: energy_uncertainty is temporary placeholder
+            energy_uncertainty = 0.0
+            
+            records.append({
+                'pk': pk,
+                'energy': energy,
+                'energy_uncertainty': energy_uncertainty,
+                'converged': calc.exit_status == 0,
+                'occ_data': occ_data,
+                'metadata': {}
+            })
+        
+        return cls(records)
+    
+    # ============================================================================
+    # Basic operations - Immutable
+    # ============================================================================
+    
+    def __len__(self) -> int:
+        """Return number of calculations."""
+        return len(self._records)
+    
+    def __getitem__(self, idx: Union[int, slice, List[int], np.ndarray]) -> 'DataBank':
+        """
+        Get subset of DataBank by index/slice/array.
+        
+        Args:
+            idx: Integer index, slice, or array of indices
+            
+        Returns:
+            New DataBank with selected records
+        """
+        if isinstance(idx, int):
+            # Single index - return DataBank with one record
+            return DataBank([self._records[idx]])
+        elif isinstance(idx, slice):
+            # Slice - return DataBank with sliced records
+            return DataBank(self._records[idx])
+        elif isinstance(idx, (list, np.ndarray)):
+            # Array of indices - return DataBank with selected records
+            selected_records = [self._records[i] for i in idx]
+            return DataBank(selected_records)
+        else:
+            raise TypeError(f"Indices must be int, slice, list, or ndarray, got {type(idx)}")
+    
+    def __repr__(self) -> str:
+        """String representation."""
+        n_converged = sum(1 for r in self._records if r['converged'])
+        return f"DataBank({len(self)} calculations, {n_converged} converged)"
+    
+    # ============================================================================
+    # Properties - Extract from records
+    # ============================================================================
+    
+    @property
+    def energies(self) -> np.ndarray:
+        """Extract energies as numpy array."""
+        return np.array([r['energy'] for r in self._records])
+    
+    @property
+    def pks(self) -> np.ndarray:
+        """Extract PKs as numpy array."""
+        return np.array([r['pk'] for r in self._records])
+    
+    @property
+    def converged(self) -> np.ndarray:
+        """Extract convergence status as boolean array."""
+        return np.array([r['converged'] for r in self._records])
+    
+    @property
+    def energy_uncertainties(self) -> np.ndarray:
+        """Extract energy uncertainties as numpy array (TODO: temporary, currently all zeros)."""
+        return np.array([r.get('energy_uncertainty', 0.0) for r in self._records])
+    
+    @property
+    def atom_ids(self) -> List[str]:
+        """Get list of unique atom IDs across all calculations."""
+        if len(self._records) == 0:
+            return []
+        
+        # Get atom IDs from first record (assuming consistent structure)
+        return self._records[0]['occ_data'].get_atom_labels()
+    
+    @property
+    def n_orbitals_dict(self) -> Dict[str, int]:
+        """Get dictionary mapping atom IDs to number of orbitals."""
+        if len(self._records) == 0:
+            return {}
+        
+        return {atom_id: self.get_n_orbitals(atom_id) for atom_id in self.atom_ids}
+    
+    def get_n_orbitals(self, atom_id: Union[str, int]) -> int:
+        """
+        Get number of orbitals for a given atom.
+        
+        Args:
+            atom_id: Atom label (e.g., 'Atom_1') or integer index into atom_ids list
+            
+        Returns:
+            Number of orbitals
+        """
+        if len(self._records) == 0:
+            raise ValueError("DataBank is empty")
+        
+        # Handle integer index
+        if isinstance(atom_id, int):
+            atom_labels = self.atom_ids
+            if atom_id >= len(atom_labels):
+                raise IndexError(f"Atom index {atom_id} out of range (0-{len(atom_labels)-1})")
+            atom_id = atom_labels[atom_id]
+        
+        matrix = self._records[0]['occ_data'].get_occupation_matrix(atom_id, 'up')
+        return len(matrix)
+    
+    # ============================================================================
+    # Filtering operations - Return new DataBank
+    # ============================================================================
+    
+    def filter_converged(self, converged: bool = True) -> 'DataBank':
+        """
+        Filter by convergence status.
+        
+        Args:
+            converged: If True, keep converged; if False, keep non-converged
+            
+        Returns:
+            New DataBank with filtered records
+        """
+        filtered = [r for r in self._records if r['converged'] == converged]
+        return DataBank(filtered)
+    
+    def filter_energy_range(self, min_energy: Optional[float] = None, 
+                           max_energy: Optional[float] = None) -> 'DataBank':
+        """
+        Filter by energy range.
+        
+        Args:
+            min_energy: Minimum energy (inclusive), None for no lower bound
+            max_energy: Maximum energy (inclusive), None for no upper bound
+            
+        Returns:
+            New DataBank with filtered records
+        """
+        filtered = []
+        for r in self._records:
+            energy = r['energy']
+            if energy is None:
+                continue
+            if min_energy is not None and energy < min_energy:
+                continue
+            if max_energy is not None and energy > max_energy:
+                continue
+            filtered.append(r)
+        
+        return DataBank(filtered)
+    
+    def filter_atoms(self, atom_ids: List[str]) -> 'DataBank':
+        """
+        Filter to only include calculations with specific atoms.
+        
+        Note: This doesn't modify the occupation data, just filters
+        calculations that have all the requested atoms.
+        
+        Args:
+            atom_ids: List of atom labels to require
+            
+        Returns:
+            New DataBank with filtered records
+        """
+        filtered = []
+        for r in self._records:
+            calc_atoms = r['occ_data'].get_atom_labels()
+            if all(atom_id in calc_atoms for atom_id in atom_ids):
+                filtered.append(r)
+        
+        return DataBank(filtered)
+    
+    # ============================================================================
+    # Sorting operations - Return new DataBank
+    # ============================================================================
+    
+    def sort_by_energy(self, ascending: bool = True) -> 'DataBank':
+        """
+        Sort by energy.
+        
+        Args:
+            ascending: If True, sort low to high; if False, high to low
+            
+        Returns:
+            New DataBank with sorted records
+        """
+        sorted_records = sorted(self._records, 
+                              key=lambda r: r['energy'] if r['energy'] is not None else float('inf'),
+                              reverse=not ascending)
+        return DataBank(sorted_records)
+    
+    def sort_by_pk(self, ascending: bool = True) -> 'DataBank':
+        """Sort by PK."""
+        sorted_records = sorted(self._records, 
+                              key=lambda r: r['pk'],
+                              reverse=not ascending)
+        return DataBank(sorted_records)
+    
+    # ============================================================================
+    # Modification operations - Return new DataBank
+    # ============================================================================
+    
+    def append(self, other: Union['DataBank', Dict[str, Any]]) -> 'DataBank':
+        """
+        Append records from another DataBank or single record.
+        
+        Args:
+            other: DataBank instance or single record dict
+            
+        Returns:
+            New DataBank with appended records
+        """
+        new_records = self._records.copy()
+        
+        if isinstance(other, DataBank):
+            new_records.extend(other._records)
+        elif isinstance(other, dict):
+            # Validate record has required keys
+            required = {'pk', 'energy', 'energy_uncertainty', 'converged', 'occ_data'}
+            if not required.issubset(other.keys()):
+                raise ValueError(f"Record must contain keys: {required}")
+            new_records.append(other)
+        else:
+            raise TypeError("Can only append DataBank or dict")
+        
+        return DataBank(new_records)
+    
+    def remove(self, indices: Union[int, List[int], np.ndarray]) -> 'DataBank':
+        """
+        Remove records by index.
+        
+        Args:
+            indices: Single index or array of indices to remove
+            
+        Returns:
+            New DataBank with records removed
+        """
+        if isinstance(indices, int):
+            indices = [indices]
+        
+        indices_set = set(indices)
+        new_records = [r for i, r in enumerate(self._records) if i not in indices_set]
+        
+        return DataBank(new_records)
+    
+    def remove_by_pk(self, pks: Union[int, List[int]]) -> 'DataBank':
+        """
+        Remove records by PK.
+        
+        Args:
+            pks: Single PK or list of PKs to remove
+            
+        Returns:
+            New DataBank with records removed
+        """
+        if isinstance(pks, (int, np.integer)):
+            pks = [pks]
+        
+        pks_set = set(int(pk) for pk in pks)  # Convert to int to handle numpy types
+        new_records = [r for r in self._records if r['pk'] not in pks_set]
+        
+        return DataBank(new_records)
+    
+    # ============================================================================
+    # PyTorch conversion - Core functionality
+    # ============================================================================
+    
+    def _build_flat_index_map(self, atom_ids: List[str], spins: List[str]) -> Dict[str, Any]:
+        """
+        Build mapping from (atom, spin, i, j) to flat index for upper-triangular elements.
+        
+        Args:
+            atom_ids: List of atom labels to include
+            spins: List of spin channels ('up', 'down')
+            
+        Returns:
+            Dict with 'forward_map', 'reverse_map', 'size', 'atom_ids', 'spins'
+        """
+        forward_map = {}  # (atom, spin, i, j) -> flat_index
+        reverse_map = []  # [flat_index] -> (atom, spin, i, j)
+        idx = 0
+        
+        for atom in sorted(atom_ids):
+            n_orb = self.get_n_orbitals(atom)
+            
+            for spin in spins:
+                # Upper triangular: i <= j
+                for i in range(n_orb):
+                    for j in range(i, n_orb):
+                        forward_map[(atom, spin, i, j)] = idx
+                        reverse_map.append((atom, spin, i, j))
+                        idx += 1
+        
+        return {
+            'forward_map': forward_map,
+            'reverse_map': reverse_map,
+            'size': idx,
+            'atom_ids': atom_ids,
+            'spins': spins
+        }
+    
+    def _flatten_single_record(self, record: Dict[str, Any], index_map: Dict[str, Any]) -> np.ndarray:
+        """
+        Flatten a single calculation record to upper-triangular vector.
+        
+        Args:
+            record: Calculation record
+            index_map: Index mapping from _build_flat_index_map
+            
+        Returns:
+            1D numpy array of flattened matrix elements
+        """
+        vec = np.zeros(index_map['size'], dtype=float)
+        occ_data = record['occ_data']
+        
+        for flat_idx, (atom, spin, i, j) in enumerate(index_map['reverse_map']):
+            try:
+                matrix = occ_data.get_occupation_matrix(atom, spin)
+                vec[flat_idx] = matrix[i][j]
+            except (KeyError, IndexError):
+                vec[flat_idx] = 0.0  # Missing data
+        
+        return vec
+    
+    def _compute_flattened_cache(self, atom_ids: Optional[List[str]] = None,
+                                spins: List[str] = ['up', 'down']) -> Dict[str, Any]:
+        """
+        Compute and cache flattened representation.
+        
+        Args:
+            atom_ids: Atom labels to include (None = all)
+            spins: Spin channels to include
+            
+        Returns:
+            Cache dict with flattened data and metadata
+        """
+        if atom_ids is None:
+            atom_ids = self.atom_ids
+        
+        # Build index mapping
+        index_map = self._build_flat_index_map(atom_ids, spins)
+        
+        # Flatten all records
+        n_records = len(self._records)
+        flattened = np.zeros((n_records, index_map['size']), dtype=float)
+        
+        for i, record in enumerate(self._records):
+            flattened[i] = self._flatten_single_record(record, index_map)
+        
+        return {
+            'flattened_matrices': flattened,
+            'index_map': index_map,
+            'atom_ids': atom_ids,
+            'spins': spins
+        }
+    
+    def to_numpy(self, atom_ids: Optional[List[str]] = None,
+                 spins: List[str] = ['up', 'down'],
+                 include_energies: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        """
+        Convert to numpy arrays.
+        
+        Args:
+            atom_ids: Atom labels to include (None = all)
+            spins: Spin channels to include
+            include_energies: If True, return (matrices, energies) tuple
+            
+        Returns:
+            Flattened matrices array, or (matrices, energies) if include_energies=True
+        """
+        # Determine actual atom_ids to use
+        actual_atom_ids = atom_ids if atom_ids is not None else self.atom_ids
+        
+        # Compute cache if needed or if parameters changed
+        if (self._cache is None or 
+            self._cache.get('atom_ids') != actual_atom_ids or
+            self._cache.get('spins') != spins):
+            self._cache = self._compute_flattened_cache(atom_ids, spins)
+        
+        matrices = self._cache['flattened_matrices']
+        
+        if include_energies:
+            return matrices, self.energies
+        return matrices
+    
+    def to_pytorch(self, atom_ids: Optional[List[str]] = None,
+                   spins: List[str] = ['up', 'down'],
+                   include_energies: bool = False,
+                   device: str = 'cpu') -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Convert to PyTorch tensors.
+        
+        Args:
+            atom_ids: Atom labels to include (None = all)
+            spins: Spin channels to include
+            include_energies: If True, return (matrices, energies) tuple
+            device: PyTorch device ('cpu', 'cuda', etc.)
+            
+        Returns:
+            Matrices tensor, or (matrices, energies) if include_energies=True
+        """
+        if not HAS_TORCH:
+            raise ImportError("PyTorch is not installed. Install with: pip install torch")
+        
+        if include_energies:
+            matrices, energies = self.to_numpy(atom_ids, spins, include_energies=True)
+            matrices_tensor = torch.tensor(matrices, dtype=torch.float32, device=device)
+            energies_tensor = torch.tensor(energies, dtype=torch.float32, device=device)
+            return matrices_tensor, energies_tensor
+        else:
+            matrices = self.to_numpy(atom_ids, spins, include_energies=False)
+            return torch.tensor(matrices, dtype=torch.float32, device=device)
+    
+    def from_numpy(self, matrices: np.ndarray, 
+                   atom_ids: Optional[List[str]] = None,
+                   spins: List[str] = ['up', 'down']) -> List[OccupationMatrixData]:
+        """
+        Reconstruct OccupationMatrixData from flattened numpy array.
+        
+        Args:
+            matrices: Flattened matrices array (n_samples, n_features)
+            atom_ids: Atom labels used in flattening
+            spins: Spin channels used in flattening
+            
+        Returns:
+            List of OccupationMatrixData objects
+        """
+        if atom_ids is None:
+            atom_ids = self.atom_ids
+        
+        # Build index map
+        index_map = self._build_flat_index_map(atom_ids, spins)
+        
+        # Handle single vector or batch
+        if matrices.ndim == 1:
+            matrices = matrices.reshape(1, -1)
+        
+        results = []
+        for vec in matrices:
+            # Initialize occupation data structure
+            occ_dict = {}
+            
+            for atom in atom_ids:
+                n_orb = self.get_n_orbitals(atom)
+                specie = self._records[0]['occ_data'][atom]['specie']
+                shell = self._records[0]['occ_data'][atom]['shell']
+                
+                occ_dict[atom] = {
+                    'specie': specie,
+                    'shell': shell,
+                    'occupation_matrix': {
+                        'up': [[0.0] * n_orb for _ in range(n_orb)],
+                        'down': [[0.0] * n_orb for _ in range(n_orb)]
+                    }
+                }
+            
+            # Fill in values from flattened vector
+            for flat_idx, (atom, spin, i, j) in enumerate(index_map['reverse_map']):
+                value = float(vec[flat_idx])
+                occ_dict[atom]['occupation_matrix'][spin][i][j] = value
+                # Symmetric matrix - fill both triangles
+                if i != j:
+                    occ_dict[atom]['occupation_matrix'][spin][j][i] = value
+            
+            results.append(OccupationMatrixData(occ_dict))
+        
+        return results
+    
+    def from_pytorch(self, matrices: 'torch.Tensor',
+                    atom_ids: Optional[List[str]] = None,
+                    spins: List[str] = ['up', 'down']) -> List[OccupationMatrixData]:
+        """
+        Reconstruct OccupationMatrixData from PyTorch tensor.
+        
+        Args:
+            matrices: Flattened matrices tensor (n_samples, n_features)
+            atom_ids: Atom labels used in flattening
+            spins: Spin channels used in flattening
+            
+        Returns:
+            List of OccupationMatrixData objects
+        """
+        if not HAS_TORCH:
+            raise ImportError("PyTorch is not installed")
+        
+        # Convert to numpy and use numpy method
+        matrices_np = matrices.cpu().numpy()
+        return self.from_numpy(matrices_np, atom_ids, spins)
+    
+    # ============================================================================
+    # Utility methods
+    # ============================================================================
+    
+    def get_record(self, idx: int) -> Dict[str, Any]:
+        """Get a single record by index."""
+        return self._records[idx]
+    
+    def get_occ_data(self, idx: int) -> OccupationMatrixData:
+        """Get OccupationMatrixData for a single calculation."""
+        return self._records[idx]['occ_data']
+    
+    def get_forward_index_map(self) -> Dict[str, Any]:
+        """Get forward index map from cached data."""
+        if self._cache is None:
+            self.to_numpy()  # Compute cache
+        return self._cache['index_map']['forward_map']
+    
+    def get_reverse_index_map(self) -> List[Tuple[str, str, int, int]]:
+        """Get reverse index map from cached data."""
+        if self._cache is None:
+            self.to_numpy()  # Compute cache
+        return self._cache['index_map']['reverse_map']
+    
+    def summary(self) -> str:
+        """Get summary statistics."""
+        if len(self._records) == 0:
+            return "Empty DataBank"
+        
+        n_total = len(self._records)
+        n_converged = sum(1 for r in self._records if r['converged'])
+        
+        energies = self.energies
+        valid_energies = energies[~np.isnan(energies)]
+        
+        summary = [
+            f"DataBank Summary:",
+            f"  Total calculations: {n_total}",
+            f"  Converged: {n_converged} ({100*n_converged/n_total:.1f}%)",
+            f"  Energy range: {valid_energies.min():.4f} to {valid_energies.max():.4f} eV",
+            f"  Atoms: {', '.join(self.atom_ids)}",
+        ]
+        
+        return '\n'.join(summary)
+    
+    def as_dict(self) -> List[Dict[str, Any]]:
+        """
+        Export records as list of dictionaries.
+        
+        Note: OccupationMatrixData objects are converted to dicts via as_dict().
+        
+        Returns:
+            List of record dictionaries with occupation data as dicts
+        """
+        result = []
+        for record in self._records:
+            record_copy = record.copy()
+            record_copy['occ_data'] = record['occ_data'].as_dict()
+            result.append(record_copy)
+        return result
+    
+    def to_dataframe(self):
+        """
+        Convert to pandas DataFrame with flattened occupation matrices.
+        
+        Returns:
+            pandas DataFrame with columns: pk, energy, energy_uncertainty, converged,
+            plus flattened occupation matrix elements as separate columns
+        """
+        try:
+            import pandas as pd
+        except ImportError:
+            raise ImportError("pandas is required for to_dataframe(). Install with: pip install pandas")
+        
+        if len(self._records) == 0:
+            return pd.DataFrame()
+        
+        # Build base dataframe with metadata
+        base_data = {
+            'pk': self.pks,
+            'energy': self.energies,
+            'energy_uncertainty': self.energy_uncertainties,
+            'converged': self.converged,
+        }
+        
+        # Add flattened matrices
+        matrices = self.to_numpy()
+        
+        # Get column names from index map
+        if self._cache is None:
+            self.to_numpy()  # Compute cache
+        
+        index_map = self._cache['index_map']
+        for flat_idx, (atom, spin, i, j) in enumerate(index_map['reverse_map']):
+            col_name = f"{atom}_{spin}_occ_{i}_{j}"
+            base_data[col_name] = matrices[:, flat_idx]
+        
+        return pd.DataFrame(base_data)

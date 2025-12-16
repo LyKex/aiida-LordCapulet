@@ -51,7 +51,7 @@ code = aiida.orm.load_code('pwx_const_debug@daint-debug')  # Adjust to your code
 
 # Set up k-points
 kpoints = KpointsData()
-kpoints.set_kpoints_mesh([4, 4, 4])  # Adjust as needed
+kpoints.set_kpoints_mesh([4, 3, 4])  # Adjust as needed
 
 # Define DFT parameters
 parameters = Dict(dict={
