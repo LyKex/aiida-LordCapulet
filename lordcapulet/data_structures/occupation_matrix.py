@@ -109,7 +109,9 @@ class OccupationMatrixData:
             }
         
         return cls(data)
-    
+
+
+    # the legacy stuff must be eventually removed 
     @classmethod
     def from_legacy_dict(cls, legacy_data: Dict[str, Any]) -> 'OccupationMatrixData':
         """
@@ -293,6 +295,56 @@ class OccupationMatrixData:
             }
         
         self._data[atom_label]['occupation_matrix'][spin] = matrix
+    
+    def get_trace_up(self, atom_label: str) -> float:
+        """
+        Get trace of spin-up occupation matrix (sum of diagonal elements).
+        
+        Args:
+            atom_label: Atom label (e.g., 'Atom_1')
+        
+        Returns:
+            Trace of spin-up occupation matrix
+        """
+        matrix = self.get_occupation_matrix_as_numpy(atom_label, 'up')
+        return float(np.trace(matrix))
+    
+    def get_trace_down(self, atom_label: str) -> float:
+        """
+        Get trace of spin-down occupation matrix (sum of diagonal elements).
+        
+        Args:
+            atom_label: Atom label (e.g., 'Atom_1')
+        
+        Returns:
+            Trace of spin-down occupation matrix
+        """
+        matrix = self.get_occupation_matrix_as_numpy(atom_label, 'down')
+        return float(np.trace(matrix))
+    
+    def get_electron_number(self, atom_label: str) -> float:
+        """
+        Get total number of electrons for an atom (trace_up + trace_down).
+        
+        Args:
+            atom_label: Atom label (e.g., 'Atom_1')
+        
+        Returns:
+            Total electron number
+        """
+        return self.get_trace_up(atom_label) + self.get_trace_down(atom_label)
+    
+    def get_magnetic_moment(self, atom_label: str) -> float:
+        """
+        Get magnetic moment for an atom (trace_up - trace_down).
+        
+        Args:
+            atom_label: Atom label (e.g., 'Atom_1')
+        
+        Returns:
+            Magnetic moment
+        """
+        return self.get_trace_up(atom_label) - self.get_trace_down(atom_label)
     
     def __len__(self) -> int:
         """Return number of atoms."""

@@ -485,5 +485,95 @@ class TestDataBankPyTorch:
         assert all(isinstance(occ, OccupationMatrixData) for occ in occ_data_list)
 
 
+class TestElectronNumberAndMoment:
+    """Test electron number and magnetic moment calculations."""
+    
+    def test_get_magnetic_moment_single_atom(self, sample_json_file):
+        """Test getting magnetic moment for a specific atom."""
+        db = DataBank.from_json(sample_json_file)
+        moments = db.get_magnetic_moment('Atom_1')
+        
+        assert isinstance(moments, np.ndarray)
+        assert len(moments) == 2
+        # For Atom_1 in first calc: 1.8 - 1.1 = 0.7
+        assert moments[0] == pytest.approx(0.7)
+        # For Atom_1 in second calc: 1.8 - 1.2 = 0.6
+        assert moments[1] == pytest.approx(0.6)
+        
+        # Test with calc_index
+        moment_0 = db.get_magnetic_moment('Atom_1', calc_index=0)
+        assert isinstance(moment_0, float)
+        assert moment_0 == pytest.approx(0.7)
+    
+    def test_get_electron_number_single_atom(self, sample_json_file):
+        """Test getting electron number for a specific atom."""
+        db = DataBank.from_json(sample_json_file)
+        electron_nums = db.get_electron_number('Atom_1')
+        
+        assert isinstance(electron_nums, np.ndarray)
+        assert len(electron_nums) == 2
+        # For Atom_1 in first calc: 1.8 + 1.1 = 2.9
+        assert electron_nums[0] == pytest.approx(2.9)
+        # For Atom_1 in second calc: 1.8 + 1.2 = 3.0
+        assert electron_nums[1] == pytest.approx(3.0)
+        
+        # Test with calc_index
+        electron_0 = db.get_electron_number('Atom_1', calc_index=0)
+        assert isinstance(electron_0, float)
+        assert electron_0 == pytest.approx(2.9)
+    
+    def test_get_all_atoms(self, sample_json_file):
+        """Test getting electron numbers and moments for all atoms."""
+        db = DataBank.from_json(sample_json_file)
+        
+        # Test electron numbers
+        electron_nums = db.get_electron_number()
+        assert isinstance(electron_nums, dict)
+        assert set(electron_nums.keys()) == {'Atom_1', 'Atom_2'}
+        assert len(electron_nums['Atom_1']) == 2
+        assert len(electron_nums['Atom_2']) == 2
+        
+        # Test magnetic moments
+        moments = db.get_magnetic_moment()
+        assert isinstance(moments, dict)
+        assert set(moments.keys()) == {'Atom_1', 'Atom_2'}
+        assert len(moments['Atom_1']) == 2
+        assert len(moments['Atom_2']) == 2
+        
+        # Test with calc_index - should return dict
+        electron_nums_0 = db.get_electron_number(calc_index=0)
+        assert isinstance(electron_nums_0, dict)
+        assert set(electron_nums_0.keys()) == {'Atom_1', 'Atom_2'}
+        
+        moments_0 = db.get_magnetic_moment(calc_index=0)
+        assert isinstance(moments_0, dict)
+        assert set(moments_0.keys()) == {'Atom_1', 'Atom_2'}
+    
+    def test_to_dataframe_with_precomputed(self, sample_json_file):
+        """Test to_dataframe with precomputed electron numbers and moments."""
+        try:
+            import pandas as pd
+        except ImportError:
+            pytest.skip("pandas not installed")
+        
+        # Create DataBank with precomputed values
+        db = DataBank.from_json(sample_json_file, include_electron_number=True, include_moment=True)
+        df = db.to_dataframe()
+        
+        assert isinstance(df, pd.DataFrame)
+        assert 'electron_number_Atom_1' in df.columns
+        assert 'electron_number_Atom_2' in df.columns
+        assert 'moment_Atom_1' in df.columns
+        assert 'moment_Atom_2' in df.columns
+        assert len(df) == 2
+        
+        # Test without precomputed values
+        db_no_precompute = DataBank.from_json(sample_json_file)
+        df_no_precompute = db_no_precompute.to_dataframe()
+        
+        assert 'electron_number_Atom_1' not in df_no_precompute.columns
+        assert 'moment_Atom_1' not in df_no_precompute.columns
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

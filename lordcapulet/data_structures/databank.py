@@ -41,14 +41,34 @@ class DataBank:
         - metadata: Optional additional fields (hubbard_energy, etc.)
     """
     
-    def __init__(self, records: Optional[List[Dict[str, Any]]] = None):
+    def __init__(self, records: Optional[List[Dict[str, Any]]] = None,
+                 include_electron_number: bool = False,
+                 include_moment: bool = False):
         """
         Initialize DataBank with calculation records.
         
         Args:
             records: List of dicts with keys: 'pk', 'energy', 'converged', 'occ_data', 'metadata'
+            include_electron_number: If True, compute and store electron numbers per atom in each record
+            include_moment: If True, compute and store magnetic moments per atom in each record
         """
         self._records = records if records is not None else []
+        
+        # Compute and store electron numbers and moments if requested
+        if include_electron_number or include_moment:
+            for record in self._records:
+                occ_data = record['occ_data']
+                atom_labels = occ_data.get_atom_labels()
+                
+                if include_electron_number:
+                    record['electron_numbers'] = {
+                        atom: occ_data.get_electron_number(atom) for atom in atom_labels
+                    }
+                
+                if include_moment:
+                    record['moments'] = {
+                        atom: occ_data.get_magnetic_moment(atom) for atom in atom_labels
+                    }
         
         # Cache for flattened data (lazy computed)
         self._cache = None  # Will be dict when computed
@@ -58,13 +78,17 @@ class DataBank:
     # ============================================================================
     
     @classmethod
-    def from_json(cls, json_path: Union[str, Path], only_converged: bool = True) -> 'DataBank':
+    def from_json(cls, json_path: Union[str, Path], only_converged: bool = True,
+                  include_electron_number: bool = False,
+                  include_moment: bool = False) -> 'DataBank':
         """
         Load DataBank from JSON file (output of gather_workchain_data).
         
         Args:
             json_path: Path to JSON file
             only_converged: If True, only load converged calculations (default: True)
+            include_electron_number: If True, compute and store electron numbers per atom
+            include_moment: If True, compute and store magnetic moments per atom
             
         Returns:
             DataBank instance with loaded calculations
@@ -119,7 +143,8 @@ class DataBank:
                 'metadata': metadata
             })
         
-        return cls(records)
+        return cls(records, include_electron_number=include_electron_number,
+                  include_moment=include_moment)
     
     @classmethod
     def from_workchain(cls, workchain_pk: int, only_converged: bool = True, **kwargs) -> 'DataBank':
@@ -274,6 +299,168 @@ class DataBank:
         
         matrix = self._records[0]['occ_data'].get_occupation_matrix(atom_id, 'up')
         return len(matrix)
+    
+    def get_trace_up(self, atom_id: Optional[str] = None, calc_index: Optional[int] = None) -> Union[float, np.ndarray, Dict[str, np.ndarray]]:
+        """
+        Get trace of spin-up occupation matrices.
+        
+        Args:
+            atom_id: Atom label (e.g., 'Atom_1'). If None, returns dict with all atoms.
+            calc_index: Calculation index. If specified, returns value for that calculation only.
+            
+        Returns:
+            If calc_index specified: float (single atom) or dict (all atoms)
+            If atom_id specified: numpy array of trace_up values (one per calculation)
+            If atom_id is None: dict mapping atom_id -> numpy array
+        """
+        if len(self._records) == 0:
+            return {} if atom_id is None else np.array([])
+        
+        # Single calculation case
+        if calc_index is not None:
+            if atom_id is None:
+                return {atom: self._records[calc_index]['occ_data'].get_trace_up(atom) 
+                       for atom in self.atom_ids}
+            else:
+                return self._records[calc_index]['occ_data'].get_trace_up(atom_id)
+        
+        # All calculations case
+        if atom_id is None:
+            # Return dict with all atoms
+            result = {}
+            for atom in self.atom_ids:
+                traces = np.array([r['occ_data'].get_trace_up(atom) for r in self._records])
+                result[atom] = traces
+            return result
+        else:
+            # Return array for specific atom
+            return np.array([r['occ_data'].get_trace_up(atom_id) for r in self._records])
+    
+    def get_trace_down(self, atom_id: Optional[str] = None, calc_index: Optional[int] = None) -> Union[float, np.ndarray, Dict[str, np.ndarray]]:
+        """
+        Get trace of spin-down occupation matrices.
+        
+        Args:
+            atom_id: Atom label (e.g., 'Atom_1'). If None, returns dict with all atoms.
+            calc_index: Calculation index. If specified, returns value for that calculation only.
+            
+        Returns:
+            If calc_index specified: float (single atom) or dict (all atoms)
+            If atom_id specified: numpy array of trace_down values (one per calculation)
+            If atom_id is None: dict mapping atom_id -> numpy array
+        """
+        if len(self._records) == 0:
+            return {} if atom_id is None else np.array([])
+        
+        # Single calculation case
+        if calc_index is not None:
+            if atom_id is None:
+                return {atom: self._records[calc_index]['occ_data'].get_trace_down(atom) 
+                       for atom in self.atom_ids}
+            else:
+                return self._records[calc_index]['occ_data'].get_trace_down(atom_id)
+        
+        # All calculations case
+        if atom_id is None:
+            # Return dict with all atoms
+            result = {}
+            for atom in self.atom_ids:
+                traces = np.array([r['occ_data'].get_trace_down(atom) for r in self._records])
+                result[atom] = traces
+            return result
+        else:
+            # Return array for specific atom
+            return np.array([r['occ_data'].get_trace_down(atom_id) for r in self._records])
+    
+    def get_electron_number(self, atom_id: Optional[str] = None, calc_index: Optional[int] = None) -> Union[float, np.ndarray, Dict[str, Union[float, np.ndarray]]]:
+        """
+        Get total electron number (trace_up + trace_down).
+        
+        Args:
+            atom_id: Atom label (e.g., 'Atom_1'). If None, returns dict with all atoms.
+            calc_index: Calculation index. If specified, returns value for that calculation only.
+            
+        Returns:
+            If calc_index specified: float (single atom) or dict (all atoms)
+            If atom_id specified: numpy array of electron numbers (one per calculation)
+            If atom_id is None: dict mapping atom_id -> numpy array
+        """
+        if len(self._records) == 0:
+            return {} if atom_id is None else np.array([])
+        
+        # Single calculation case
+        if calc_index is not None:
+            record = self._records[calc_index]
+            # Check if precomputed
+            if 'electron_numbers' in record:
+                if atom_id is None:
+                    return record['electron_numbers']
+                else:
+                    return record['electron_numbers'][atom_id]
+            else:
+                # Compute on the fly
+                if atom_id is None:
+                    return {atom: record['occ_data'].get_electron_number(atom) 
+                           for atom in self.atom_ids}
+                else:
+                    return record['occ_data'].get_electron_number(atom_id)
+        
+        # All calculations case
+        if atom_id is None:
+            # Return dict with all atoms
+            result = {}
+            for atom in self.atom_ids:
+                electrons = np.array([r['occ_data'].get_electron_number(atom) for r in self._records])
+                result[atom] = electrons
+            return result
+        else:
+            # Return array for specific atom
+            return np.array([r['occ_data'].get_electron_number(atom_id) for r in self._records])
+    
+    def get_magnetic_moment(self, atom_id: Optional[str] = None, calc_index: Optional[int] = None) -> Union[float, np.ndarray, Dict[str, Union[float, np.ndarray]]]:
+        """
+        Get magnetic moment (trace_up - trace_down).
+        
+        Args:
+            atom_id: Atom label (e.g., 'Atom_1'). If None, returns dict with all atoms.
+            calc_index: Calculation index. If specified, returns value for that calculation only.
+            
+        Returns:
+            If calc_index specified: float (single atom) or dict (all atoms)
+            If atom_id specified: numpy array of magnetic moments (one per calculation)
+            If atom_id is None: dict mapping atom_id -> numpy array
+        """
+        if len(self._records) == 0:
+            return {} if atom_id is None else np.array([])
+        
+        # Single calculation case
+        if calc_index is not None:
+            record = self._records[calc_index]
+            # Check if precomputed
+            if 'moments' in record:
+                if atom_id is None:
+                    return record['moments']
+                else:
+                    return record['moments'][atom_id]
+            else:
+                # Compute on the fly
+                if atom_id is None:
+                    return {atom: record['occ_data'].get_magnetic_moment(atom) 
+                           for atom in self.atom_ids}
+                else:
+                    return record['occ_data'].get_magnetic_moment(atom_id)
+        
+        # All calculations case
+        if atom_id is None:
+            # Return dict with all atoms
+            result = {}
+            for atom in self.atom_ids:
+                moments = np.array([r['occ_data'].get_magnetic_moment(atom) for r in self._records])
+                result[atom] = moments
+            return result
+        else:
+            # Return array for specific atom
+            return np.array([r['occ_data'].get_magnetic_moment(atom_id) for r in self._records])
     
     # ============================================================================
     # Filtering operations - Return new DataBank
@@ -720,9 +907,13 @@ class DataBank:
         """
         Convert to pandas DataFrame with flattened occupation matrices.
         
+        If electron numbers or moments were computed at initialization (via include_electron_number
+        or include_moment flags), they will be included as columns automatically.
+        
         Returns:
             pandas DataFrame with columns: pk, energy, energy_uncertainty, converged,
-            plus flattened occupation matrix elements as separate columns
+            plus flattened occupation matrix elements as separate columns,
+            plus electron_number_<atom> and moment_<atom> columns if they were precomputed
         """
         try:
             import pandas as pd
@@ -739,6 +930,20 @@ class DataBank:
             'energy_uncertainty': self.energy_uncertainties,
             'converged': self.converged,
         }
+        
+        # Check if electron numbers are present in records
+        if 'electron_numbers' in self._records[0]:
+            for atom in self.atom_ids:
+                base_data[f'electron_number_{atom}'] = [
+                    r['electron_numbers'][atom] for r in self._records
+                ]
+        
+        # Check if moments are present in records
+        if 'moments' in self._records[0]:
+            for atom in self.atom_ids:
+                base_data[f'moment_{atom}'] = [
+                    r['moments'][atom] for r in self._records
+                ]
         
         # Add flattened matrices
         matrices = self.to_numpy()
