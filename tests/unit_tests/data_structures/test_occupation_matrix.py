@@ -46,8 +46,8 @@ class TestOccupationMatrixData:
         occ_data = OccupationMatrixData.from_dict(test_data)
         assert occ_data.data == test_data
     
-    def test_get_trace_up(self):
-        """Test getting trace of spin-up matrix."""
+    def test_get_trace(self):
+        """Test getting trace of occupation matrices."""
         test_data = {
             'Atom_1': {
                 'specie': 'Fe1',
@@ -59,23 +59,13 @@ class TestOccupationMatrixData:
             }
         }
         occ_data = OccupationMatrixData(test_data)
-        trace_up = occ_data.get_trace_up('Atom_1')
+        
+        # Test spin-up
+        trace_up = occ_data.get_trace('Atom_1', 'up')
         assert trace_up == pytest.approx(3.0)  # 1.0 + 2.0
-    
-    def test_get_trace_down(self):
-        """Test getting trace of spin-down matrix."""
-        test_data = {
-            'Atom_1': {
-                'specie': 'Fe1',
-                'shell': '3d',
-                'occupation_matrix': {
-                    'up': [[1.0, 0.1], [0.1, 2.0]],
-                    'down': [[0.5, 0.0], [0.0, 0.5]]
-                }
-            }
-        }
-        occ_data = OccupationMatrixData(test_data)
-        trace_down = occ_data.get_trace_down('Atom_1')
+        
+        # Test spin-down
+        trace_down = occ_data.get_trace('Atom_1', 'down')
         assert trace_down == pytest.approx(1.0)  # 0.5 + 0.5
     
     def test_get_electron_number(self):

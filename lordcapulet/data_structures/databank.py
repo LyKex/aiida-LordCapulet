@@ -300,17 +300,18 @@ class DataBank:
         matrix = self._records[0]['occ_data'].get_occupation_matrix(atom_id, 'up')
         return len(matrix)
     
-    def get_trace_up(self, atom_id: Optional[str] = None, calc_index: Optional[int] = None) -> Union[float, np.ndarray, Dict[str, np.ndarray]]:
+    def get_trace(self, spin: str, atom_id: Optional[str] = None, calc_index: Optional[int] = None) -> Union[float, np.ndarray, Dict[str, np.ndarray]]:
         """
-        Get trace of spin-up occupation matrices.
+        Get trace of occupation matrices.
         
         Args:
+            spin: Spin channel ('up' or 'down')
             atom_id: Atom label (e.g., 'Atom_1'). If None, returns dict with all atoms.
             calc_index: Calculation index. If specified, returns value for that calculation only.
             
         Returns:
             If calc_index specified: float (single atom) or dict (all atoms)
-            If atom_id specified: numpy array of trace_up values (one per calculation)
+            If atom_id specified: numpy array of trace values (one per calculation)
             If atom_id is None: dict mapping atom_id -> numpy array
         """
         if len(self._records) == 0:
@@ -319,58 +320,22 @@ class DataBank:
         # Single calculation case
         if calc_index is not None:
             if atom_id is None:
-                return {atom: self._records[calc_index]['occ_data'].get_trace_up(atom) 
+                return {atom: self._records[calc_index]['occ_data'].get_trace(atom, spin) 
                        for atom in self.atom_ids}
             else:
-                return self._records[calc_index]['occ_data'].get_trace_up(atom_id)
+                return self._records[calc_index]['occ_data'].get_trace(atom_id, spin)
         
         # All calculations case
         if atom_id is None:
             # Return dict with all atoms
             result = {}
             for atom in self.atom_ids:
-                traces = np.array([r['occ_data'].get_trace_up(atom) for r in self._records])
+                traces = np.array([r['occ_data'].get_trace(atom, spin) for r in self._records])
                 result[atom] = traces
             return result
         else:
             # Return array for specific atom
-            return np.array([r['occ_data'].get_trace_up(atom_id) for r in self._records])
-    
-    def get_trace_down(self, atom_id: Optional[str] = None, calc_index: Optional[int] = None) -> Union[float, np.ndarray, Dict[str, np.ndarray]]:
-        """
-        Get trace of spin-down occupation matrices.
-        
-        Args:
-            atom_id: Atom label (e.g., 'Atom_1'). If None, returns dict with all atoms.
-            calc_index: Calculation index. If specified, returns value for that calculation only.
-            
-        Returns:
-            If calc_index specified: float (single atom) or dict (all atoms)
-            If atom_id specified: numpy array of trace_down values (one per calculation)
-            If atom_id is None: dict mapping atom_id -> numpy array
-        """
-        if len(self._records) == 0:
-            return {} if atom_id is None else np.array([])
-        
-        # Single calculation case
-        if calc_index is not None:
-            if atom_id is None:
-                return {atom: self._records[calc_index]['occ_data'].get_trace_down(atom) 
-                       for atom in self.atom_ids}
-            else:
-                return self._records[calc_index]['occ_data'].get_trace_down(atom_id)
-        
-        # All calculations case
-        if atom_id is None:
-            # Return dict with all atoms
-            result = {}
-            for atom in self.atom_ids:
-                traces = np.array([r['occ_data'].get_trace_down(atom) for r in self._records])
-                result[atom] = traces
-            return result
-        else:
-            # Return array for specific atom
-            return np.array([r['occ_data'].get_trace_down(atom_id) for r in self._records])
+            return np.array([r['occ_data'].get_trace(atom_id, spin) for r in self._records])
     
     def get_electron_number(self, atom_id: Optional[str] = None, calc_index: Optional[int] = None) -> Union[float, np.ndarray, Dict[str, Union[float, np.ndarray]]]:
         """

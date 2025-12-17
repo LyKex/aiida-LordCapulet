@@ -296,30 +296,18 @@ class OccupationMatrixData:
         
         self._data[atom_label]['occupation_matrix'][spin] = matrix
     
-    def get_trace_up(self, atom_label: str) -> float:
+    def get_trace(self, atom_label: str, spin: str) -> float:
         """
-        Get trace of spin-up occupation matrix (sum of diagonal elements).
+        Get trace of occupation matrix (sum of diagonal elements).
         
         Args:
             atom_label: Atom label (e.g., 'Atom_1')
+            spin: Spin channel ('up' or 'down')
         
         Returns:
-            Trace of spin-up occupation matrix
+            Trace of occupation matrix
         """
-        matrix = self.get_occupation_matrix_as_numpy(atom_label, 'up')
-        return float(np.trace(matrix))
-    
-    def get_trace_down(self, atom_label: str) -> float:
-        """
-        Get trace of spin-down occupation matrix (sum of diagonal elements).
-        
-        Args:
-            atom_label: Atom label (e.g., 'Atom_1')
-        
-        Returns:
-            Trace of spin-down occupation matrix
-        """
-        matrix = self.get_occupation_matrix_as_numpy(atom_label, 'down')
+        matrix = self.get_occupation_matrix_as_numpy(atom_label, spin)
         return float(np.trace(matrix))
     
     def get_electron_number(self, atom_label: str) -> float:
@@ -332,7 +320,7 @@ class OccupationMatrixData:
         Returns:
             Total electron number
         """
-        return self.get_trace_up(atom_label) + self.get_trace_down(atom_label)
+        return self.get_trace(atom_label, 'up') + self.get_trace(atom_label, 'down')
     
     def get_magnetic_moment(self, atom_label: str) -> float:
         """
@@ -344,7 +332,7 @@ class OccupationMatrixData:
         Returns:
             Magnetic moment
         """
-        return self.get_trace_up(atom_label) - self.get_trace_down(atom_label)
+        return self.get_trace(atom_label, 'up') - self.get_trace(atom_label, 'down')
     
     def __len__(self) -> int:
         """Return number of atoms."""
