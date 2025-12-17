@@ -19,7 +19,7 @@ except (ImportError, ModuleNotFoundError):
     HAS_TORCH = False
     torch = None
 
-from .occupation_matrix import OccupationMatrixData
+from .occupation_matrix import OccupationMatrixData, compute_occupation_distance
 
 
 class DataBank:
@@ -762,8 +762,15 @@ class DataBank:
             
             for atom in atom_ids:
                 n_orb = self.get_n_orbitals(atom)
-                specie = self._records[0]['occ_data'][atom]['specie']
-                shell = self._records[0]['occ_data'][atom]['shell']
+                try:
+                    specie = self._records[0]['occ_data'][atom]['specie']
+                except:
+                    specie = 'unknown'
+                
+                try:
+                    shell = self._records[0]['occ_data'][atom]['shell']
+                except:
+                    shell = 'unknown'
                 
                 occ_dict[atom] = {
                     'specie': specie,
@@ -830,6 +837,59 @@ class DataBank:
         if self._cache is None:
             self.to_numpy()  # Compute cache
         return self._cache['index_map']['reverse_map']
+    
+    def compute_distances(self, 
+                         reference: OccupationMatrixData,
+                         atom_label: Optional[str] = None,
+                         spins: Optional[List[str]] = None,
+                         calc_id: Optional[int] = None) -> Union[float, np.ndarray]:
+        """
+        Compute Euclidean distance from all calculations to a reference occupation matrix.
+        
+        Args:
+            reference: Reference OccupationMatrixData to compare against
+            atom_label: If specified, compute distance only for this atom.
+                       If None, compute total distance across all atoms.
+            spins: List of spin channels to include (default: ['up', 'down'])
+            calc_id: If specified, compute distance only for this single calculation.
+                    If None, compute distances for all calculations.
+        
+        Returns:
+            If calc_id specified: float (distance for that calculation)
+            If calc_id is None: numpy array of distances (one per calculation)
+        
+        Examples:
+            >>> # Distance from all calculations to a reference
+            >>> distances = databank.compute_distances(reference_occ)
+            
+            >>> # Distance for specific calculation
+            >>> dist = databank.compute_distances(reference_occ, calc_id=0)
+            
+            >>> # Distance for specific atom only
+            >>> distances = databank.compute_distances(reference_occ, atom_label='Atom_1')
+        """
+        if len(self._records) == 0:
+            return np.array([]) if calc_id is None else 0.0
+        
+        # Single calculation case
+        if calc_id is not None:
+            if calc_id < 0 or calc_id >= len(self._records):
+                raise IndexError(f"calc_id {calc_id} out of range (0-{len(self._records)-1})")
+            
+            calc_occ = self._records[calc_id]['occ_data']
+            return compute_occupation_distance(calc_occ, reference, 
+                                              atom_label=atom_label, 
+                                              spins=spins)
+        
+        # All calculations case
+        distances = np.zeros(len(self._records))
+        for i, record in enumerate(self._records):
+            calc_occ = record['occ_data']
+            distances[i] = compute_occupation_distance(calc_occ, reference,
+                                                       atom_label=atom_label,
+                                                       spins=spins)
+        
+        return distances
     
     def summary(self) -> str:
         """Get summary statistics."""

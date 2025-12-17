@@ -575,5 +575,161 @@ class TestElectronNumberAndMoment:
         assert 'moment_Atom_1' not in df_no_precompute.columns
 
 
+class TestDatabankDistances:
+    """Test suite for DataBank distance computation."""
+    
+    def test_compute_distances_to_all_calcs(self, sample_json_file):
+        """Test computing distances from all calculations to a reference."""
+        db = DataBank.from_json(sample_json_file)
+        
+        # Use the first calculation as reference
+        reference = db.get_occ_data(0)
+        
+        # Compute distances to all calculations
+        distances = db.compute_distances(reference)
+        
+        # Should have one distance per calculation
+        assert len(distances) == 2  # Only 2 converged
+        assert isinstance(distances, np.ndarray)
+        
+        # Distance to itself should be zero
+        assert distances[0] == 0.0
+        
+        # Distance to different calculation should be positive
+        assert distances[1] > 0.0
+    
+    def test_compute_distances_single_calc(self, sample_json_file):
+        """Test computing distance for a single calculation."""
+        db = DataBank.from_json(sample_json_file)
+        
+        # Use the first calculation as reference
+        reference = db.get_occ_data(0)
+        
+        # Distance from calc 0 to itself should be zero
+        dist_0 = db.compute_distances(reference, calc_id=0)
+        assert isinstance(dist_0, float)
+        assert dist_0 == 0.0
+        
+        # Distance from calc 1 to calc 0 should be positive
+        dist_1 = db.compute_distances(reference, calc_id=1)
+        assert isinstance(dist_1, float)
+        assert dist_1 > 0.0
+    
+    def test_compute_distances_single_atom(self, sample_json_file):
+        """Test computing distances for a single atom only."""
+        db = DataBank.from_json(sample_json_file)
+        
+        reference = db.get_occ_data(0)
+        
+        # Compute distance for Atom_1 only
+        distances_atom1 = db.compute_distances(reference, atom_label='Atom_1')
+        assert len(distances_atom1) == 2
+        assert distances_atom1[0] == 0.0  # Distance to itself
+        
+        # Compute distance for Atom_2 only
+        distances_atom2 = db.compute_distances(reference, atom_label='Atom_2')
+        assert len(distances_atom2) == 2
+        assert distances_atom2[0] == 0.0  # Distance to itself
+        
+        # Total distance should be combination of both atoms
+        distances_all = db.compute_distances(reference)
+        # Due to Pythagorean theorem: total^2 = atom1^2 + atom2^2
+        assert np.isclose(distances_all[1]**2, 
+                         distances_atom1[1]**2 + distances_atom2[1]**2)
+    
+    def test_compute_distances_specific_spins(self, sample_json_file):
+        """Test computing distances for specific spin channels."""
+        db = DataBank.from_json(sample_json_file)
+        
+        reference = db.get_occ_data(0)
+        
+        # Compute distance for up-spin only
+        distances_up = db.compute_distances(reference, spins=['up'])
+        assert len(distances_up) == 2
+        assert distances_up[0] == 0.0
+        
+        # Compute distance for down-spin only
+        distances_down = db.compute_distances(reference, spins=['down'])
+        assert len(distances_down) == 2
+        assert distances_down[0] == 0.0
+        
+        # Total distance should be combination of both spins
+        distances_all = db.compute_distances(reference, spins=['up', 'down'])
+        assert np.isclose(distances_all[1]**2,
+                         distances_up[1]**2 + distances_down[1]**2)
+    
+    def test_compute_distances_empty_databank(self):
+        """Test computing distances on empty DataBank."""
+        db = DataBank()
+        
+        # Create a dummy reference
+        ref_data = {
+            'Atom_1': {
+                'specie': 'Fe',
+                'shell': '3d',
+                'occupation_matrix': {
+                    'up': [[1.0, 0.0], [0.0, 1.0]],
+                    'down': [[1.0, 0.0], [0.0, 1.0]]
+                }
+            }
+        }
+        reference = OccupationMatrixData(ref_data)
+        
+        distances = db.compute_distances(reference)
+        assert len(distances) == 0
+        
+        # Single calc_id should return 0.0
+        dist = db.compute_distances(reference, calc_id=None)
+        assert len(dist) == 0
+    
+    def test_compute_distances_invalid_calc_id(self, sample_json_file):
+        """Test error handling for invalid calc_id."""
+        db = DataBank.from_json(sample_json_file)
+        reference = db.get_occ_data(0)
+        
+        # calc_id out of range should raise IndexError
+        with pytest.raises(IndexError, match="calc_id .* out of range"):
+            db.compute_distances(reference, calc_id=10)
+        
+        with pytest.raises(IndexError, match="calc_id .* out of range"):
+            db.compute_distances(reference, calc_id=-1)
+    
+    def test_compute_distances_known_values(self, sample_json_file):
+        """Test distance computation with known values."""
+        db = DataBank.from_json(sample_json_file)
+        
+        # Get the two calculations
+        occ_0 = db.get_occ_data(0)
+        occ_1 = db.get_occ_data(1)
+        
+        # Manually compute expected distance
+        # Calc 0 Atom_1 up: [[1.0, 0.0], [0.0, 0.8]]
+        # Calc 1 Atom_1 up: [[0.95, 0.0], [0.0, 0.85]]
+        # Differences: (1.0-0.95)^2 + (0.8-0.85)^2 = 0.05^2 + 0.05^2 = 0.005
+        
+        # Calc 0 Atom_1 down: [[0.5, 0.0], [0.0, 0.6]]
+        # Calc 1 Atom_1 down: [[0.55, 0.0], [0.0, 0.65]]
+        # Differences: (0.5-0.55)^2 + (0.6-0.65)^2 = 0.05^2 + 0.05^2 = 0.005
+        
+        # Calc 0 Atom_2 up: [[0.9, 0.0], [0.0, 0.7]]
+        # Calc 1 Atom_2 up: [[0.88, 0.0], [0.0, 0.72]]
+        # Differences: (0.9-0.88)^2 + (0.7-0.72)^2 = 0.02^2 + 0.02^2 = 0.0008
+        
+        # Calc 0 Atom_2 down: [[0.6, 0.0], [0.0, 0.5]]
+        # Calc 1 Atom_2 down: [[0.62, 0.0], [0.0, 0.52]]
+        # Differences: (0.6-0.62)^2 + (0.5-0.52)^2 = 0.02^2 + 0.02^2 = 0.0008
+        
+        # Total: sqrt(0.005 + 0.005 + 0.0008 + 0.0008) = sqrt(0.0116)
+        expected_distance = np.sqrt(0.0116)
+        
+        distances = db.compute_distances(occ_0)
+        
+        # Distance at index 0 should be 0 (to itself)
+        assert distances[0] == 0.0
+        
+        # Distance at index 1 should match expected
+        assert np.isclose(distances[1], expected_distance, rtol=1e-5)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

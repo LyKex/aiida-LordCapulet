@@ -12,6 +12,9 @@ from typing import Dict, List, Any, Union, Optional
 from aiida.orm import JsonableData, load_node
 
 
+
+
+
 class OccupationMatrixData:
     """
     Unified occupation matrix data structure.
@@ -429,3 +432,79 @@ def filter_atoms_by_species(occupation_data: OccupationMatrixData,
             filtered_data[atom_label] = atom_info
     
     return OccupationMatrixData(filtered_data)
+
+
+def compute_occupation_distance(occ_data1: OccupationMatrixData,
+                                occ_data2: OccupationMatrixData,
+                                atom_label: Optional[str] = None,
+                                spins: Optional[List[str]] = None) -> float:
+    """
+    Compute Euclidean distance between two occupation matrix datasets.
+    
+    The distance is computed as the Frobenius norm of the difference between
+    occupation matrices, optionally for specific atoms and spin channels.
+    
+    Args:
+        occ_data1: First OccupationMatrixData object
+        occ_data2: Second OccupationMatrixData object
+        atom_label: If specified, compute distance only for this atom.
+                   If None, compute total distance across all atoms.
+        spins: List of spin channels to include (default: ['up', 'down'])
+    
+    Returns:
+        Euclidean distance (float)
+    
+    Raises:
+        ValueError: If atom sets don't match or matrices have incompatible dimensions
+    
+    Examples:
+        >>> # Distance between all atoms
+        >>> dist = compute_occupation_distance(occ1, occ2)
+        
+        >>> # Distance for specific atom
+        >>> dist = compute_occupation_distance(occ1, occ2, atom_label='Atom_1')
+        
+        >>> # Distance for up-spin only
+        >>> dist = compute_occupation_distance(occ1, occ2, spins=['up'])
+    """
+    if spins is None:
+        spins = ['up', 'down']
+    
+    # Determine which atoms to compare
+    if atom_label is not None:
+        # Single atom case
+        if atom_label not in occ_data1.data:
+            raise ValueError(f"Atom {atom_label} not found in first occupation data")
+        if atom_label not in occ_data2.data:
+            raise ValueError(f"Atom {atom_label} not found in second occupation data")
+        atom_labels = [atom_label]
+    else:
+        # All atoms case - check that atom sets match
+        atoms1 = set(occ_data1.get_atom_labels())
+        atoms2 = set(occ_data2.get_atom_labels())
+        if atoms1 != atoms2:
+            raise ValueError(f"Atom labels don't match: {atoms1} vs {atoms2}")
+        atom_labels = sorted(atoms1, key=lambda x: (int(x.split('_')[1]) if '_' in x else 0))
+    
+    # Compute total squared distance
+    total_squared_dist = 0.0
+    
+    for atom in atom_labels:
+        for spin in spins:
+            # Get matrices as numpy arrays
+            matrix1 = occ_data1.get_occupation_matrix_as_numpy(atom, spin)
+            matrix2 = occ_data2.get_occupation_matrix_as_numpy(atom, spin)
+            
+            # Check dimensions match
+            if matrix1.shape != matrix2.shape:
+                raise ValueError(
+                    f"Matrix dimensions don't match for atom {atom}, spin {spin}: "
+                    f"{matrix1.shape} vs {matrix2.shape}"
+                )
+            
+            # Compute squared Frobenius norm of difference
+            diff = matrix1 - matrix2
+            total_squared_dist += np.sum(diff ** 2)
+    
+    # Return Euclidean distance (square root of sum of squared differences)
+    return float(np.sqrt(total_squared_dist))
