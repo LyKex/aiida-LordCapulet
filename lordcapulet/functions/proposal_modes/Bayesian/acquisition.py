@@ -4,47 +4,13 @@ Custom acquisition functions with physics-based constraints.
 This module provides acquisition functions that incorporate physical
 constraints on occupation matrices, such as:
 - Trace constraints (target electron counts)
-- Eigenvalue constraints (positive semi-definite matrices)
-- Minor determinant constraints (principal minor conditions)
+- Principal minor constraints (positive semi-definite condition via 2x2 minors)
 """
 
 import torch
+import numpy as np
 from botorch.acquisition.analytic import AnalyticAcquisitionFunction
 from botorch.utils.transforms import t_batch_mode_transform
-
-
-# def compute_eigenvalue_preference(matrix, k=5.0):
-#     """
-#     Computes a preference score (0-1) for a matrix using a smooth
-#     sigmoid-based penalty on eigenvalues.
-    
-#     This enforces that all eigenvalues should be in the range [0, 1],
-#     which is a physical constraint for occupation matrices.
-    
-#     Args:
-#         matrix: The input matrix (must be real symmetric or Hermitian)
-#         k: A "stiffness" parameter. Higher k = steeper penalty (default: 5.0)
-           
-#     Returns:
-#         Preference score from 0 to 1 (1 = all eigenvalues in [0,1])
-#     """
-#     try:
-#         # Use .eigh() for real symmetric/Hermitian matrices
-#         eigenvalues = torch.linalg.eigh(matrix).eigenvalues
-#     except torch.linalg.LinAlgError:
-#         # If the decomposition fails (e.g., NaNs), this is a bad point
-#         return torch.tensor(0.0, device=matrix.device, dtype=matrix.dtype)
-
-#     # Penalty for eigenvalues < 0 (pushes eig > 0)
-#     pref_low = torch.sigmoid(k * eigenvalues)
-
-#     # Penalty for eigenvalues > 1 (pushes eig < 1)
-#     pref_high = torch.sigmoid(k * (1.0 - eigenvalues))
-
-#     # Total score is the product of all individual scores
-#     # This ensures all eigenvalues must be in the [0, 1] range
-#     total_pref = torch.prod(pref_low) * torch.prod(pref_high) 
-#     return total_pref
 
 
 def compute_minor_preference_offdiag_only(matrix, k=20.0):
@@ -109,10 +75,11 @@ def compute_trace_preference(trace_val, target, sigma):
     return torch.exp(-((trace_val - target)**2) / (2 * sigma**2))
 
 
-def compute_total_preference(X_batch, databank, atom_ids, trace_target, trace_sigma, eig_k):
+def compute_total_preference(X_batch, databank, atom_ids, trace_target, trace_sigma, 
+                           use_minor_preference=False, eig_k=20.0):
     """
     Calculates a combined preference score (0-1) for a BATCH of X vectors,
-    considering BOTH trace and eigenvalue/minor constraints.
+    considering BOTH trace and principal minor constraints.
     
     Args:
         X_batch: Batch of flattened occupation matrices [batch_size, num_features]
@@ -120,44 +87,46 @@ def compute_total_preference(X_batch, databank, atom_ids, trace_target, trace_si
         atom_ids: List of atom IDs to constrain
         trace_target: Target trace value (electron count)
         trace_sigma: Width of trace preference Gaussian
-        eig_k: Stiffness parameter for eigenvalue/minor preference
+        use_minor_preference: If True, apply principal minor constraint
+        eig_k: Stiffness parameter for principal minor preference (default: 20.0)
         
     Returns:
         Tensor of preference scores, one per batch element
     """
-    import torch
     scores = []
     
     for x in X_batch:
-        total_pref_trace = torch.tensor(1.0, device=X_batch.device, dtype=X_batch.dtype)
-        total_pref_eig = torch.tensor(1.0, device=X_batch.device, dtype=X_batch.dtype)
-        
         try:
             # Unflatten to get the matrices for this 'x'
             occ_data = databank.from_pytorch(x.unsqueeze(0), atom_ids=atom_ids, spins=['up', 'down'])[0]
             
+            total_pref_trace = torch.tensor(1.0, device=X_batch.device, dtype=X_batch.dtype)
+            total_pref_minor = torch.tensor(1.0, device=X_batch.device, dtype=X_batch.dtype)
+            
             for atom_id in atom_ids:
                 # Get matrices as numpy arrays, then convert to torch
-                up_matrix = torch.tensor(occ_data.get_occupation_matrix(atom_id, 'up'), 
-                                        device=X_batch.device, dtype=X_batch.dtype)
-                down_matrix = torch.tensor(occ_data.get_occupation_matrix(atom_id, 'down'), 
-                                          device=X_batch.device, dtype=X_batch.dtype)
+                up_matrix_np = occ_data.get_occupation_matrix(atom_id, 'up')
+                down_matrix_np = occ_data.get_occupation_matrix(atom_id, 'down')
+                
+                up_matrix = torch.tensor(up_matrix_np, device=X_batch.device, dtype=X_batch.dtype)
+                down_matrix = torch.tensor(down_matrix_np, device=X_batch.device, dtype=X_batch.dtype)
                 
                 # 1. Trace Preference
                 trace = torch.trace(up_matrix) + torch.trace(down_matrix)
                 pref_trace = compute_trace_preference(trace, trace_target, trace_sigma)
                 total_pref_trace *= pref_trace
                 
-                # 2. Eigenvalue/Minor Preference
-                pref_eig_up = compute_minor_preference_offdiag_only(up_matrix, k=eig_k)
-                pref_eig_down = compute_minor_preference_offdiag_only(down_matrix, k=eig_k)
-                total_pref_eig *= pref_eig_up * pref_eig_down
+                # 2. Principal Minor Preference (only if explicitly enabled)
+                if use_minor_preference:
+                    pref_minor_up = compute_minor_preference_offdiag_only(up_matrix, k=eig_k)
+                    pref_minor_down = compute_minor_preference_offdiag_only(down_matrix, k=eig_k)
+                    total_pref_minor *= pref_minor_up * pref_minor_down
             
             # 3. Final Combined Score for this 'x'
-            final_score = total_pref_trace * total_pref_eig
+            final_score = total_pref_trace * total_pref_minor
             scores.append(final_score)
             
-        except Exception:
+        except Exception as e:
             # If unflattening or computation fails, it's a bad point
             scores.append(torch.tensor(0.0, device=X_batch.device, dtype=X_batch.dtype))
         
@@ -190,19 +159,28 @@ class AnalyticCustomPreference(AnalyticAcquisitionFunction):
         Compute the constrained acquisition function value.
         
         Args:
-            X: Input tensor [batch_size, 1, num_features]
+            X: Input tensor [batch_size, q, num_features] or [batch_size, 1, num_features]
             
         Returns:
             Acquisition values multiplied by preference scores
         """
-        # X has shape [batch_size, 1, num_features]
-        X_squeezed = X.squeeze(-2)  # Shape [batch_size, num_features]
+        # X has shape [batch_size, q, num_features] where q is number of candidates
+        # For batch optimization (q>1), we need to handle each candidate
         
         # 1. Get energy score from base acquisition function
         energy_score = self.base_acqf(X)
         
-        # 2. Get preference score (a value from 0 to 1)
-        pref_score = self.compute_pref(X_squeezed)
+        # 2. Get preference scores for each candidate in the batch
+        # Reshape X to [batch_size * q, num_features] for preference computation
+        batch_size, q, num_features = X.shape
+        X_flat = X.reshape(-1, num_features)  # [batch_size * q, num_features]
+        
+        pref_scores_flat = self.compute_pref(X_flat)  # [batch_size * q]
+        
+        # For q>1 batch optimization, we need the minimum preference across all q candidates
+        # because a batch is only as good as its worst element
+        pref_scores = pref_scores_flat.reshape(batch_size, q)  # [batch_size, q]
+        pref_score = pref_scores.min(dim=-1, keepdim=True)[0]  # [batch_size, 1]
         
         # 3. Combine: The preference score "gates" the energy score
-        return energy_score * pref_score
+        return energy_score * pref_score.squeeze(-1)

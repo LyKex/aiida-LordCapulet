@@ -814,6 +814,109 @@ class DataBank:
         matrices_np = matrices.cpu().numpy()
         return self.from_numpy(matrices_np, atom_ids, spins)
     
+    def to_numpy_single_matrix(self, occ_data: OccupationMatrixData,
+                               atom_ids: Optional[List[str]] = None,
+                               spins: List[str] = ['up', 'down']) -> np.ndarray:
+        """
+        Convert a single OccupationMatrixData to flattened numpy array using DataBank's index map.
+        
+        This method ensures consistency with the DataBank's flattening scheme by using
+        the same index mapping.
+        
+        Args:
+            occ_data: OccupationMatrixData object to flatten
+            atom_ids: Atom labels to include (None = use DataBank's atoms)
+            spins: Spin channels to include
+            
+        Returns:
+            1D numpy array of flattened matrix elements
+            
+        Raises:
+            ValueError: If occ_data is incompatible with DataBank structure
+            
+        Examples:
+            >>> # Flatten a single occupation matrix
+            >>> vec = databank.to_numpy_single_matrix(occ_data)
+            
+            >>> # Flatten with specific atoms
+            >>> vec = databank.to_numpy_single_matrix(occ_data, atom_ids=['Atom_1'])
+        """
+        if len(self._records) == 0:
+            raise ValueError("DataBank is empty - cannot determine structure")
+        
+        # Use DataBank's atoms if not specified
+        if atom_ids is None:
+            atom_ids = self.atom_ids
+        
+        # Validate atom compatibility
+        occ_atoms = occ_data.get_atom_labels()
+        for atom in atom_ids:
+            if atom not in occ_atoms:
+                raise ValueError(f"Atom '{atom}' not found in input OccupationMatrixData. "
+                               f"Available atoms: {occ_atoms}")
+        
+        # Validate orbital count compatibility
+        for atom in atom_ids:
+            expected_n_orb = self.get_n_orbitals(atom)
+            occ_matrix = occ_data.get_occupation_matrix(atom, spins[0])
+            actual_n_orb = len(occ_matrix)
+            
+            if actual_n_orb != expected_n_orb:
+                raise ValueError(f"Incompatible number of orbitals for atom '{atom}': "
+                               f"expected {expected_n_orb}, got {actual_n_orb}")
+        
+        # Build index map
+        index_map = self._build_flat_index_map(atom_ids, spins)
+        
+        # Flatten the single OccupationMatrixData
+        vec = np.zeros(index_map['size'], dtype=float)
+        
+        for flat_idx, (atom, spin, i, j) in enumerate(index_map['reverse_map']):
+            try:
+                matrix = occ_data.get_occupation_matrix(atom, spin)
+                vec[flat_idx] = matrix[i][j]
+            except (KeyError, IndexError):
+                vec[flat_idx] = 0.0  # Missing data
+        
+        return vec
+    
+    def to_pytorch_single_matrix(self, occ_data: OccupationMatrixData,
+                                 atom_ids: Optional[List[str]] = None,
+                                 spins: List[str] = ['up', 'down'],
+                                 device: str = 'cpu') -> 'torch.Tensor':
+        """
+        Convert a single OccupationMatrixData to flattened PyTorch tensor using DataBank's index map.
+        
+        This method ensures consistency with the DataBank's flattening scheme by using
+        the same index mapping.
+        
+        Args:
+            occ_data: OccupationMatrixData object to flatten
+            atom_ids: Atom labels to include (None = use DataBank's atoms)
+            spins: Spin channels to include
+            device: PyTorch device ('cpu', 'cuda', etc.)
+            
+        Returns:
+            1D PyTorch tensor of flattened matrix elements
+            
+        Raises:
+            ValueError: If occ_data is incompatible with DataBank structure
+            ImportError: If PyTorch is not installed
+            
+        Examples:
+            >>> # Flatten to PyTorch tensor
+            >>> tensor = databank.to_pytorch_single_matrix(occ_data)
+            
+            >>> # Flatten to GPU tensor
+            >>> tensor = databank.to_pytorch_single_matrix(occ_data, device='cuda')
+        """
+        if not HAS_TORCH:
+            raise ImportError("PyTorch is not installed. Install with: pip install torch")
+        
+        # Use numpy method and convert to tensor
+        vec = self.to_numpy_single_matrix(occ_data, atom_ids, spins)
+        return torch.tensor(vec, dtype=torch.float32, device=device)
+    
     # ============================================================================
     # Utility methods
     # ============================================================================
