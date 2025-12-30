@@ -81,9 +81,11 @@ oscdft_card = Dict(dict={
     'oscdft_type': 2,
     'n_oscdft': total_dimensions,
     'constraint_strength': 1.0,
-    'constraint_conv_thr': 0.005,
+    'constraint_conv_thr': 0.01,
     'constraint_maxstep': 200,
     'constraint_mixing_beta': 0.4,
+    'iteration_type': 1,
+    'max_conv_thr': 0.01,
 })
 
 # Global search parameters
