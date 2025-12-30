@@ -84,6 +84,7 @@ oscdft_card = Dict(dict={
     'constraint_conv_thr': 0.005,
     'constraint_maxstep': 200,
     'constraint_mixing_beta': 0.4,
+
 })
 
 # Global search parameters

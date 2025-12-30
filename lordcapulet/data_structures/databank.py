@@ -706,7 +706,7 @@ class DataBank:
     def to_pytorch(self, atom_ids: Optional[List[str]] = None,
                    spins: List[str] = ['up', 'down'],
                    include_energies: bool = False,
-                   device: str = 'cpu') -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+                   device: str = 'cpu') -> Union['torch.Tensor', Tuple['torch.Tensor', 'torch.Tensor']]:
         """
         Convert to PyTorch tensors.
         
